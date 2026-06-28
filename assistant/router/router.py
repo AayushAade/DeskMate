@@ -1,3 +1,9 @@
+from capabilities.datetime.datetime_capability import DateTimeCapability
+from capabilities.battery.battery_capability import BatteryCapability
+from capabilities.clipboard.clipboard_capability import ClipboardCapability
+from capabilities.files.files_capability import FilesCapability
+from capabilities.weather.weather_capability import WeatherCapability
+from capabilities.search.search_capability import SearchCapability
 from capabilities.calculator.calculator_capability import CalculatorCapability
 from capabilities.apps.apps_capability import AppsCapability
 from backends.ollama_backend import OllamaBackend
@@ -5,8 +11,14 @@ from config import settings
 
 class AssistantRouter:
     def __init__(self):
-        # Register capabilities
+        # Register capabilities in priority order
         self.capabilities = [
+            DateTimeCapability(),
+            BatteryCapability(),
+            ClipboardCapability(),
+            FilesCapability(),
+            WeatherCapability(),
+            SearchCapability(),
             CalculatorCapability(),
             AppsCapability()
         ]
