@@ -46,6 +46,15 @@ def init_db():
         )
     """)
     
+    # 4. Episodic Memory Summaries
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS episodic_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            summary TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.commit()
     conn.close()
     print("[DbManager] Database tables initialized successfully.")

@@ -10,12 +10,16 @@ class OllamaBackend(BaseBackend):
         self.url = settings.OLLAMA_URL
         self.model = settings.OLLAMA_MODEL
 
-    def generate_response(self, chat_history: list) -> str:
-        # Construct system message
+    def generate_response(self, chat_history: list, context: str = "") -> str:
+        # Construct system message with dynamic context if available
+        system_content = SYSTEM_PROMPT
+        if context:
+            system_content = f"{SYSTEM_PROMPT}\n\n{context}"
+            
         messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT
+                "content": system_content
             }
         ]
         

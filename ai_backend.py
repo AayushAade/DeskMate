@@ -1,6 +1,7 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 from assistant.router.router import AssistantRouter
-from services import memory_service
+from memory import semantic_memory, policy
+from database import db_manager
 
 # Instantiate the AssistantRouter
 assistant_router = AssistantRouter()
@@ -11,11 +12,11 @@ class AIWorker(QThread):
     
     def __init__(self, chat_history):
         super().__init__()
-        # Format of chat_history: [{"role": "user"|"model", "parts": [{"text": text}]}]
+        # chat_history format: [{"role": "user"|"model", "parts": [{"text": text}]}]
         self.chat_history = chat_history
 
     def run(self):
-        # 1. Extract the latest user query to inspect/execute
+        # 1. Extract the latest user query
         user_query = ""
         if self.chat_history:
             last_msg = self.chat_history[-1]
@@ -27,11 +28,23 @@ class AIWorker(QThread):
             self.error.emit("Meow? I didn't hear anything... 🐾")
             return
             
-        # 2. Save user query to persistent SQLite memory
-        session_id = "default_session"
-        memory_service.save_chat_message(session_id, "user", user_query)
-        
-        # 3. Map PyQt chat_history list to simple list of {"role", "text"} for the Router
+        # 2. Analyze query via Memory Policy (Semantic facts or direct episodic statements)
+        try:
+            mem_type, key, val = policy.analyze_input(user_query)
+            if mem_type == "semantic":
+                semantic_memory.save_fact(key, val)
+                print(f"[AIWorker] Extracted fact: {key} -> {val}")
+            elif mem_type == "episodic":
+                # Save direct accomplishments immediately
+                conn = db_manager.get_connection()
+                conn.execute("INSERT INTO episodic_memory (summary) VALUES (?)", (val,))
+                conn.commit()
+                conn.close()
+                print(f"[AIWorker] Saved accomplishment: {val}")
+        except Exception as e:
+            print(f"[AIWorker] Memory policy analysis exception: {e}")
+            
+        # 3. Map working memory chat history to simple format
         mapped_history = []
         for msg in self.chat_history:
             role = msg.get("role")
@@ -45,15 +58,8 @@ class AIWorker(QThread):
         # 4. Route and execute through the AssistantRouter
         try:
             response_text = assistant_router.route_and_execute(user_query, mapped_history)
-            
-            # Save Mochi's response to persistent SQLite memory
-            memory_service.save_chat_message(session_id, "model", response_text)
-            
-            # Emit result back to GUI
             self.finished.emit(response_text)
-            
         except Exception as e:
-            # Handle connection or internal runtime exceptions gracefully
             error_str = str(e)
             print(f"[AIWorker] Exception during routing: {e}")
             if "wake up" in error_str or "connection" in error_str.lower():

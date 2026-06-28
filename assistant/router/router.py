@@ -6,8 +6,10 @@ from capabilities.weather.weather_capability import WeatherCapability
 from capabilities.search.search_capability import SearchCapability
 from capabilities.calculator.calculator_capability import CalculatorCapability
 from capabilities.apps.apps_capability import AppsCapability
+from capabilities.memory.memory_capability import MemoryCapability
 from backends.ollama_backend import OllamaBackend
 from config import settings
+from memory import relevance_scorer
 
 class AssistantRouter:
     def __init__(self):
@@ -19,6 +21,7 @@ class AssistantRouter:
             FilesCapability(),
             WeatherCapability(),
             SearchCapability(),
+            MemoryCapability(),
             CalculatorCapability(),
             AppsCapability()
         ]
@@ -50,9 +53,9 @@ class AssistantRouter:
                 
         # 2. Fall back to LLM backend (Tier 2 AI routing)
         print("[AssistantRouter] No capability matched. Routing to LLM backend...")
-        backend = self.get_backend()
         
-        # We need to construct the prompt and call generate_response
-        # Ensure the latest query is appended to history for the LLM call if not already there
-        # The chat_history list passed down is managed by the AIWorker
-        return backend.generate_response(chat_history)
+        # Retrieve relevant contextual memories from SQLite database based on the query
+        context = relevance_scorer.retrieve_relevant_context(cleaned_query)
+        
+        backend = self.get_backend()
+        return backend.generate_response(chat_history, context=context)

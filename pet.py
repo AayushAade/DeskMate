@@ -520,6 +520,20 @@ class DesktopPet(QWidget):
             QApplication.quit()
 
     def closeEvent(self, event):
+        # Save episodic memory summary of the active conversation on close
+        if self.chat_window and self.chat_window.chat_history:
+            mapped_history = []
+            for msg in self.chat_window.chat_history:
+                role = msg.get("role")
+                parts = msg.get("parts", [])
+                text = parts[0].get("text", "") if parts else ""
+                mapped_history.append({"role": role, "text": text})
+            try:
+                from memory import episodic_memory
+                episodic_memory.save_session_summary(mapped_history)
+            except Exception as e:
+                print(f"[Pet] Error saving session summary on close: {e}")
+
         if self.chat_window:
             self.chat_window.close()
         if hasattr(self, 'input_listener'):

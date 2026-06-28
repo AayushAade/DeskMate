@@ -15,7 +15,7 @@ from assistant.router.router import AssistantRouter
 from backends.base_backend import BaseBackend
 
 class MockBackend(BaseBackend):
-    def generate_response(self, chat_history: list) -> str:
+    def generate_response(self, chat_history: list, context: str = "") -> str:
         return "Meow! This is a mock LLM response! 🐾"
 
 class TestMilestone1(unittest.TestCase):
@@ -84,31 +84,33 @@ class TestMilestone1(unittest.TestCase):
 
     def test_calculator_capability(self):
         router = AssistantRouter()
+        cap = next(c for c in router.capabilities if c.name == "calculator")
         
         # Test matching regex
-        intent = router.capabilities[0].match_and_extract("what is 47 * 2")
+        intent = cap.match_and_extract("what is 47 * 2")
         self.assertIsNotNone(intent)
         self.assertEqual(intent.capability, "calculator")
         self.assertEqual(intent.parameters["expression"], "47 * 2")
         
         # Test execution
-        result = router.capabilities[0].execute(intent.parameters)
+        result = cap.execute(intent.parameters)
         self.assertTrue(result.success)
         self.assertEqual(result.data["result"], 94)
         self.assertIn("94", result.message)
         
         # Test scientific function
-        intent_sci = router.capabilities[0].match_and_extract("evaluate sqrt(144)")
+        intent_sci = cap.match_and_extract("evaluate sqrt(144)")
         self.assertIsNotNone(intent_sci)
-        result_sci = router.capabilities[0].execute(intent_sci.parameters)
+        result_sci = cap.execute(intent_sci.parameters)
         self.assertTrue(result_sci.success)
         self.assertEqual(result_sci.data["result"], 12.0)
 
     def test_apps_capability(self):
         router = AssistantRouter()
+        cap = next(c for c in router.capabilities if c.name == "apps")
         
         # Test matching
-        intent = router.capabilities[1].match_and_extract("open VS Code")
+        intent = cap.match_and_extract("open VS Code")
         self.assertIsNotNone(intent)
         self.assertEqual(intent.parameters["app_name"], "vs code")
         
@@ -117,7 +119,7 @@ class TestMilestone1(unittest.TestCase):
         original_launch = app_service.launch_app
         try:
             app_service.launch_app = lambda name: (True, "Visual Studio Code", "mock success")
-            result = router.capabilities[1].execute(intent.parameters)
+            result = cap.execute(intent.parameters)
             self.assertTrue(result.success)
             self.assertEqual(result.data["app_name"], "Visual Studio Code")
             self.assertIn("Visual Studio Code", result.message)

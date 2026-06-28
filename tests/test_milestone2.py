@@ -13,7 +13,7 @@ from capabilities.base_capability import Intent, CapabilityResult
 from backends.base_backend import BaseBackend
 
 class MockBackend(BaseBackend):
-    def generate_response(self, chat_history: list) -> str:
+    def generate_response(self, chat_history: list, context: str = "") -> str:
         return "mock llm"
 
 class TestMilestone2(unittest.TestCase):
