@@ -33,6 +33,19 @@ class CalculatorCapability(BaseCapability):
         if matched:
             # Clean expression from general punctuation/words if it was prefixed
             expression = expression.replace("?", "").strip()
+            
+            # Robust check: if any non-math alphabetical letters are in the expression, reject it.
+            # Allowed math functions/constants:
+            math_words = ["sin", "cos", "tan", "sqrt", "pi", "log", "exp", "abs", "e"]
+            test_expr = expression
+            for word in math_words:
+                test_expr = re.sub(r'\b' + word + r'\b', '', test_expr)
+            # Remove all non-alphabet characters
+            letters_only = re.sub(r'[^a-z]', '', test_expr)
+            if letters_only:
+                # Contains non-math letters, reject match
+                return None
+                
             return Intent(
                 capability=self.name,
                 confidence=0.95 if any(p in q for p in prefixes) else 0.80,
