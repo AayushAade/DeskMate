@@ -6,6 +6,9 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter
 from listener import GlobalInputListener
 from ai_backend import AIWorker
+from notifications.notification_manager import notification_manager
+from events.behavior_engine import tick as behavior_tick, get_mood
+from services import scheduler
 
 class AIAssistantChat(QWidget):
     def __init__(self, parent=None, parent_pet=None):
@@ -195,9 +198,12 @@ class AIAssistantChat(QWidget):
             self.parent_pet.is_thinking = True
             self.parent_pet.set_state("TYPING")
             
+        self.is_streaming = False
+        
         # Spawn Ollama worker
         self.worker = AIWorker(self.chat_history)
         self.worker.finished.connect(self.on_worker_finished)
+        self.worker.token_received.connect(self.on_token_received)
         self.worker.error.connect(self.on_worker_error)
         self.worker.start()
 
@@ -211,6 +217,15 @@ class AIAssistantChat(QWidget):
         """)
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
+    def on_token_received(self, token):
+        if not self.is_streaming:
+            self.is_streaming = True
+            self.display_history.append(("model", ""))
+            
+        role, text = self.display_history[-1]
+        self.display_history[-1] = (role, text + token)
+        self.rebuild_display()
+
     def on_worker_finished(self, response_text):
         self.message_input.setEnabled(True)
         self.btn_send.setEnabled(True)
@@ -221,7 +236,12 @@ class AIAssistantChat(QWidget):
             self.parent_pet.set_state("IDLE")
             
         self.chat_history.append({"role": "model", "parts": [{"text": response_text}]})
-        self.append_message("model", response_text)
+        
+        if not self.is_streaming:
+            self.append_message("model", response_text)
+        else:
+            self.display_history[-1] = ("model", response_text)
+            self.rebuild_display()
 
     def on_worker_error(self, error_message):
         self.message_input.setEnabled(True)
@@ -234,6 +254,9 @@ class AIAssistantChat(QWidget):
             
         if self.chat_history and self.chat_history[-1]["role"] == "user":
             self.chat_history.pop()
+            
+        if hasattr(self, 'is_streaming') and self.is_streaming:
+            self.display_history.pop()
             
         self.append_message("model", error_message)
 
@@ -349,6 +372,9 @@ class DesktopPet(QWidget):
         self.input_listener.typing_detected.connect(self.on_global_typing)
         self.input_listener.start()
         
+        # Connect to Notification Manager signals
+        notification_manager.notification_triggered.connect(self.on_notification_received)
+        
         # Initialize position and animation
         self.init_position()
         self.update_animation()
@@ -423,9 +449,46 @@ class DesktopPet(QWidget):
         
         # Idle timer check
         self.idle_seconds += 1
+        
+        # 1. Check for due reminders from the Scheduler
+        scheduler.check_pending_reminders()
+        
+        # 2. Behavior engine tick (every 1s)
+        is_active = (self.idle_seconds <= 1)
+        proactive_msg = behavior_tick(self.idle_seconds, is_active)
+        if proactive_msg:
+            self.on_notification_received("🐾 Mochi Alert", proactive_msg)
+            
+        # 3. Micro idle behaviors: trigger micro animation state changes
+        if self.idle_seconds > 0 and self.idle_seconds % 20 == 0:
+            if self.state == "IDLE":
+                self.set_state("TYPING")
+                self.typing_cooldown = 2
+                
         if self.idle_seconds >= 60:
             if self.state != "SLEEPING":
                 self.set_state("SLEEPING")
+
+    def on_notification_received(self, title, message):
+        if self.chat_window is None:
+            self.chat_window = AIAssistantChat(parent_pet=self)
+            
+        if not self.chat_window.isVisible():
+            chat_w = self.chat_window.width()
+            chat_h = self.chat_window.height()
+            px = self.x() - chat_w - 10
+            py = (self.y() + 128) - chat_h
+            screen_geom = self.get_screen_geometry()
+            if px < screen_geom.left():
+                px = screen_geom.left() + 10
+            if py < screen_geom.top():
+                py = screen_geom.top() + 10
+            self.chat_window.move(px, py)
+            self.chat_window.show()
+            self.chat_window.raise_()
+            self.chat_window.activateWindow()
+            
+        self.chat_window.append_message("model", message)
 
     def toggle_chat_window(self):
         if self.chat_window is None:

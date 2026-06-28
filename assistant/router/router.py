@@ -8,11 +8,12 @@ from capabilities.calculator.calculator_capability import CalculatorCapability
 from capabilities.apps.apps_capability import AppsCapability
 from capabilities.memory.memory_capability import MemoryCapability
 from capabilities.conversation.conversation_capability import ConversationCapability
+from capabilities.reminders.reminders_capability import RemindersCapability
 
 from backends.ollama_backend import OllamaBackend
 from config import settings
 
-from assistant.router import query_normalizer, intent_detector, query_rewriter
+from assistant.router import query_normalizer, intent_detector, query_rewriter, response_cache
 from assistant.session import context_resolver
 from memory import relevance_scorer
 
@@ -20,7 +21,8 @@ class AssistantRouter:
     def __init__(self):
         # Register capabilities in priority order
         self.capabilities = [
-            ConversationCapability(),  # High priority: intercepts greeting/thanks/farewells locally
+            ConversationCapability(),  # High priority: intercepts greetings/farewells locally
+            RemindersCapability(),
             DateTimeCapability(),
             BatteryCapability(),
             ClipboardCapability(),
@@ -44,12 +46,18 @@ class AssistantRouter:
 
     def route_and_execute(self, query: str, chat_history: list) -> str:
         """
-        Routes the user query through the intelligence layer pipeline:
-        1. Normalizes query.
-        2. Rewrites query based on session context (supports pronouns/follow-ups).
-        3. Iterates over registered capabilities for a match.
-        4. Executes matching capability, updating session context with output data.
-        5. Falls back to LLM backend if no local capability matched.
+        Sync execution: consumes the stream and returns a single concatenated string.
+        Useful for unit tests and simple sync integrations.
+        """
+        chunks = []
+        for chunk in self.route_and_stream(query, chat_history):
+            chunks.append(chunk)
+        return "".join(chunks)
+
+    def route_and_stream(self, query: str, chat_history: list):
+        """
+        Streams query execution: yields text tokens.
+        Checks local capabilities first, checks response cache, then streams from Ollama.
         """
         # 1. Normalize query
         normalized = query_normalizer.normalize_query(query)
@@ -68,23 +76,44 @@ class AssistantRouter:
                 matched_intent = intent
                 break
                 
-        # 4. Execute matching local capability
+        # 4. Execute matching local capability (Instant single-chunk stream)
         if matched_cap is not None:
             print(f"[AssistantRouter] Matched capability '{matched_cap.name}' with confidence {matched_intent.confidence}")
             result = matched_cap.execute(matched_intent.parameters)
             
             # Update session context with execution output data
             context_resolver.update_context(matched_cap.name, result.data)
-            return result.message
+            yield result.message
+            return
             
-        # 5. Fall back to LLM backend (Last Resort)
-        print("[AssistantRouter] No capability matched. Routing to LLM backend...")
-        
-        # Reset capability context since we fell back to general conversation
+        # 5. Check response cache to avoid LLM inference
+        cached = response_cache.get_cached_response(rewritten)
+        if cached:
+            print("[AssistantRouter] Cache hit! Short-circuiting LLM call.")
+            context_resolver.update_context("llm", {})
+            yield cached
+            return
+
+        # 6. Fall back to LLM backend (Last Resort)
+        print("[AssistantRouter] No capability matched. Routing to LLM stream fallback...")
         context_resolver.update_context("llm", {})
         
         # Retrieve relevant memories for LLM prompt enhancement
         context = relevance_scorer.retrieve_relevant_context(rewritten)
         
         backend = self.get_backend()
-        return backend.generate_response(chat_history, context=context)
+        
+        # Stream response from backend, accumulate tokens, and yield
+        tokens = []
+        try:
+            for token in backend.generate_stream(chat_history, context=context):
+                tokens.append(token)
+                yield token
+                
+            # If successful, store the full response in the cache
+            full_response = "".join(tokens)
+            if full_response.strip():
+                response_cache.set_cached_response(rewritten, full_response)
+        except Exception as e:
+            # Re-raise so worker catches and reports error
+            raise e

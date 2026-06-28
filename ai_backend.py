@@ -8,6 +8,7 @@ assistant_router = AssistantRouter()
 
 class AIWorker(QThread):
     finished = pyqtSignal(str)
+    token_received = pyqtSignal(str)  # Emitted for each incoming token chunk
     error = pyqtSignal(str)
     
     def __init__(self, chat_history):
@@ -55,10 +56,16 @@ class AIWorker(QThread):
                 "text": text
             })
             
-        # 4. Route and execute through the AssistantRouter
+        # 4. Route and stream through the AssistantRouter
         try:
-            response_text = assistant_router.route_and_execute(user_query, mapped_history)
+            full_response = []
+            for token in assistant_router.route_and_stream(user_query, mapped_history):
+                full_response.append(token)
+                self.token_received.emit(token)
+                
+            response_text = "".join(full_response)
             self.finished.emit(response_text)
+            
         except Exception as e:
             error_str = str(e)
             print(f"[AIWorker] Exception during routing: {e}")

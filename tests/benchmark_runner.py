@@ -24,9 +24,17 @@ def run_benchmarks():
     
     router = AssistantRouter()
     
+    # Dynamically find capabilities to be resilient against list changes
+    calc_cap = next(c for c in router.capabilities if c.name == "calculator")
+    apps_cap = next(c for c in router.capabilities if c.name == "apps")
+    dt_cap = next(c for c in router.capabilities if c.name == "datetime")
+    batt_cap = next(c for c in router.capabilities if c.name == "battery")
+    clip_cap = next(c for c in router.capabilities if c.name == "clipboard")
+    weather_cap = next(c for c in router.capabilities if c.name == "weather")
+    search_cap = next(c for c in router.capabilities if c.name == "search")
+    
     # 3. Benchmark Calculator (50 iterations)
     start_time = time.time()
-    calc_cap = router.capabilities[6]  # CalculatorCapability
     for _ in range(50):
         calc_cap.execute({"expression": "47*92 + sqrt(144)"})
     calc_avg = ((time.time() - start_time) / 50) * 1000  # ms
@@ -37,7 +45,6 @@ def run_benchmarks():
     app_service.launch_app = lambda name: (True, "Visual Studio Code", "mock success")
     
     start_time = time.time()
-    apps_cap = router.capabilities[7]  # AppsCapability
     for _ in range(50):
         apps_cap.execute({"app_name": "vs code"})
     apps_avg = ((time.time() - start_time) / 50) * 1000  # ms
@@ -46,7 +53,6 @@ def run_benchmarks():
     
     # 5. Benchmark DateTime (50 iterations)
     start_time = time.time()
-    dt_cap = router.capabilities[0]  # DateTimeCapability
     for _ in range(50):
         dt_cap.execute({})
     dt_avg = ((time.time() - start_time) / 50) * 1000  # ms
@@ -54,7 +60,6 @@ def run_benchmarks():
     
     # 6. Benchmark Battery Status (50 iterations)
     start_time = time.time()
-    batt_cap = router.capabilities[1]  # BatteryCapability
     for _ in range(50):
         batt_cap.execute({})
     batt_avg = ((time.time() - start_time) / 50) * 1000  # ms
@@ -62,7 +67,6 @@ def run_benchmarks():
     
     # 7. Benchmark Clipboard (50 iterations)
     start_time = time.time()
-    clip_cap = router.capabilities[2]  # ClipboardCapability
     for _ in range(50):
         clip_cap.execute({})
     clip_avg = ((time.time() - start_time) / 50) * 1000  # ms
@@ -70,7 +74,6 @@ def run_benchmarks():
     
     # 8. Benchmark Weather (5 iterations - Real Network Calls)
     start_time = time.time()
-    weather_cap = router.capabilities[4]  # WeatherCapability
     weather_success = 0
     for _ in range(5):
         res = weather_cap.execute({"city": "San Francisco"})
@@ -81,7 +84,6 @@ def run_benchmarks():
     
     # 9. Benchmark Search (5 iterations - Real Network Calls)
     start_time = time.time()
-    search_cap = router.capabilities[5]  # SearchCapability
     search_success = 0
     for _ in range(5):
         res = search_cap.execute({"query": "AI news"})
@@ -96,7 +98,6 @@ def run_benchmarks():
     ollama_latency = 0.0
     try:
         # We perform a route that falls back to LLM (no matching capability)
-        # Note: if Ollama is not running, we catch the exception and print connection error latency
         res = router.route_and_execute("Explain neural networks in one sentence", [])
         ollama_latency = (time.time() - start_time) * 1000
         print(f"Ollama Fallback Latency: {ollama_latency:.2f} ms")
@@ -107,28 +108,28 @@ def run_benchmarks():
         
     # Write to BENCHMARK.md
     benchmark_md = f"""# Mochi Desktop Pet Performance Benchmarks
-
-This file tracks the baseline performance measurements for Mochi's hybrid AI assistant architecture.
-
-## System Footprint
-* **Memory Usage (RSS):** {mem_rss:.2f} MB
-* **Idle CPU Usage (Process):** {cpu_usage:.2f}%
-
-## Capability Latencies
-
-| Capability / Flow | Type | Iterations | Avg Latency (ms) | Notes |
-|---|---|---|---|---|
-| **DateTime** | Local | 50 | {dt_avg:.2f} ms | Pure python datetime fetching |
-| **Battery Status** | Local | 50 | {batt_avg:.2f} ms | Local pmset parsing & psutil fallback |
-| **Clipboard** | Local | 50 | {clip_avg:.2f} ms | Reads macOS pbpaste |
-| **Calculator** | Local | 50 | {calc_avg:.2f} ms | Evaluates sandboxed math expressions |
-| **App Launcher** | Local | 50 | {apps_avg:.2f} ms | Launches desktop applications (mocked) |
-| **Weather** | Network | 5 | {weather_avg:.2f} ms | Open-Meteo API (success: {weather_success}/5) |
-| **DuckDuckGo Search** | Network | 5 | {search_avg:.2f} ms | DuckDuckGo search library (success: {search_success}/5) |
-| **Ollama Fallback** | AI Model | 1 | {ollama_latency:.2f} ms | Status: {ollama_status} |
-
-*Generated at 2026-06-28T08:00:00Z*
-"""
+110: 
+111: This file tracks the baseline performance measurements for Mochi's hybrid AI assistant architecture.
+112: 
+113: ## System Footprint
+114: * **Memory Usage (RSS):** {mem_rss:.2f} MB
+115: * **Idle CPU Usage (Process):** {cpu_usage:.2f}%
+116: 
+117: ## Capability Latencies
+118: 
+119: | Capability / Flow | Type | Iterations | Avg Latency (ms) | Notes |
+120: |---|---|---|---|---|
+121: | **DateTime** | Local | 50 | {dt_avg:.2f} ms | Pure python datetime fetching |
+122: | **Battery Status** | Local | 50 | {batt_avg:.2f} ms | Local pmset parsing & psutil fallback |
+123: | **Clipboard** | Local | 50 | {clip_avg:.2f} ms | Reads macOS pbpaste |
+124: | **Calculator** | Local | 50 | {calc_avg:.2f} ms | Evaluates sandboxed math expressions |
+125: | **App Launcher** | Local | 50 | {apps_avg:.2f} ms | Launches desktop applications (mocked) |
+126: | **Weather** | Network | 5 | {weather_avg:.2f} ms | Open-Meteo API (success: {weather_success}/5) |
+127: | **DuckDuckGo Search** | Network | 5 | {search_avg:.2f} ms | DuckDuckGo search library (success: {search_success}/5) |
+128: | **Ollama Fallback** | AI Model | 1 | {ollama_latency:.2f} ms | Status: {ollama_status} |
+129: 
+130: *Generated at 2026-06-28T08:00:00Z*
+131: """
     
     with open("BENCHMARK.md", "w") as f:
         f.write(benchmark_md)

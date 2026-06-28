@@ -55,6 +55,15 @@ def init_db():
         )
     """)
     
+    # 5. Response Cache Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS response_cache (
+            prompt TEXT PRIMARY KEY,
+            response TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.commit()
     conn.close()
     print("[DbManager] Database tables initialized successfully.")

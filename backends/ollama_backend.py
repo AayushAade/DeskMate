@@ -10,7 +10,7 @@ class OllamaBackend(BaseBackend):
         self.url = settings.OLLAMA_URL
         self.model = settings.OLLAMA_MODEL
 
-    def generate_response(self, chat_history: list, context: str = "") -> str:
+    def generate_stream(self, chat_history: list, context: str = ""):
         # Construct system message with dynamic context if available
         system_content = SYSTEM_PROMPT
         if context:
@@ -37,7 +37,7 @@ class OllamaBackend(BaseBackend):
         payload = {
             "model": self.model,
             "messages": messages,
-            "stream": False
+            "stream": True
         }
         
         headers = {
@@ -53,10 +53,12 @@ class OllamaBackend(BaseBackend):
             )
             # Timeout of 120 seconds
             with urllib.request.urlopen(req, timeout=120) as response:
-                res_data = json.loads(response.read().decode("utf-8"))
-                content = res_data.get("message", {}).get("content", "")
-                return content
-                
+                for line in response:
+                    if line:
+                        chunk = json.loads(line.decode("utf-8"))
+                        token = chunk.get("message", {}).get("content", "")
+                        yield token
+                        
         except urllib.error.URLError as e:
             print(f"[OllamaBackend] Connection error to Ollama: {e}")
             raise RuntimeError("I can't wake up right now... Is Ollama running? 🐾")
@@ -70,3 +72,9 @@ class OllamaBackend(BaseBackend):
             raise RuntimeError(f"Ollama API Error: {error_msg}")
         except Exception as e:
             raise RuntimeError(f"Error: {e}")
+
+    def generate_response(self, chat_history: list, context: str = "") -> str:
+        tokens = []
+        for token in self.generate_stream(chat_history, context):
+            tokens.append(token)
+        return "".join(tokens)
