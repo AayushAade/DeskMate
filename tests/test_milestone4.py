@@ -44,7 +44,8 @@ class TestMilestone4(unittest.TestCase):
 
     def setUp(self):
         context_resolver.clear_context()
-        behavior_engine.set_mood("Happy")
+        from assistant.state.state_manager import state_manager
+        state_manager.mood = "Happy"
         # Clear cache and reminders tables
         conn = db_manager.get_connection()
         conn.execute("DELETE FROM response_cache")
@@ -82,15 +83,16 @@ class TestMilestone4(unittest.TestCase):
         self.assertEqual(tokens, ["mock", " ", "streamed", " ", "text"])
 
     def test_behavior_engine_and_mood_shifts(self):
+        from assistant.state.state_manager import state_manager
         # Initial mood
-        self.assertEqual(behavior_engine.get_mood(), "Happy")
+        self.assertEqual(state_manager.mood, "Happy")
         
-        # Test event updates mood
+        # Test event updates mood / emotion
         event_bus.publish("APP_LAUNCHED", app_name="vs code", success=True)
-        self.assertEqual(behavior_engine.get_mood(), "Excited")
+        self.assertEqual(state_manager.emotion, "Excited")
         
         event_bus.publish("CALCULATION_COMPLETED", expression="2+2", result=4)
-        self.assertEqual(behavior_engine.get_mood(), "Focused")
+        self.assertEqual(state_manager.mood, "Focused")
         
         # Test typing ticks for coding duration stretch reminder
         proactive_msg = None
@@ -99,7 +101,7 @@ class TestMilestone4(unittest.TestCase):
             if msg:
                 proactive_msg = msg
                 
-        self.assertEqual(behavior_engine.get_mood(), "Sleepy")
+        self.assertEqual(state_manager.mood, "Sleepy")
         self.assertIsNotNone(proactive_msg)
         self.assertIn("stretch", proactive_msg)
 

@@ -1,8 +1,9 @@
 import random
 from capabilities.base_capability import BaseCapability, Intent, CapabilityResult
 from assistant.router.intent_detector import detect_intent
+from assistant.state.state_manager import state_manager
 
-# Modular template fragments for building hundreds of unique Mochi responses
+# Modular template fragments for building Mochi responses
 ACTIONS = [
     "*Mochi stretches.*",
     "*Tail swishes happily.*",
@@ -16,13 +17,29 @@ ACTIONS = [
     "*Grooms paw.*"
 ]
 
-GREETING_BODIES = [
-    "Good morning! Ready to build something today?",
-    "Hi! I've been waiting for you.",
-    "Hello! Let's do some coding today, meow!",
-    "Hey there, human friend!",
-    "Mrrp! Nice to see you!",
-    "Nya! Let's have a productive day!"
+# Greetings by Affection level
+GREETINGS_STRANGER = [
+    "Hello! Ready to build something today?",
+    "Hi! I'm Mochi, nice to meet you!",
+    "Hey there, human friend! Let's start coding!"
+]
+
+GREETINGS_ACQUAINTANCE = [
+    "Welcome back.",
+    "Good to see you.",
+    "Hi! Let's write some code, meow!"
+]
+
+GREETINGS_FRIEND = [
+    "Good to see you again.",
+    "Welcome back, developer! Ready to build?",
+    "Mrrp! Nice to hang out with you again!"
+]
+
+GREETINGS_COMPANION = [
+    "Evening coding session again? 🐾",
+    "Welcome back! I saved your spot while you were away.",
+    "Nya! It's coding time! Glad you're here. 😻"
 ]
 
 FAREWELL_BODIES = [
@@ -105,10 +122,8 @@ class ConversationCapability(BaseCapability):
         return "conversation"
 
     def match_and_extract(self, query: str) -> Intent | None:
-        # Detect intent type using the intent detector
         intent = detect_intent(query)
         
-        # Intercept casual conversation intents locally
         conversational_intents = {
             "greeting", "farewell", "thanks", "agreement", 
             "excitement", "laughter", "apology", "compliment", "confusion"
@@ -128,7 +143,16 @@ class ConversationCapability(BaseCapability):
         
         # 1. Select body pool based on intent
         if intent_type == "greeting":
-            body = random.choice(GREETING_BODIES)
+            # Greetings pool dependent on Affection level
+            level = state_manager.affection_level
+            if level == "Stranger":
+                body = random.choice(GREETINGS_STRANGER)
+            elif level == "Acquaintance":
+                body = random.choice(GREETINGS_ACQUAINTANCE)
+            elif level == "Friend":
+                body = random.choice(GREETINGS_FRIEND)
+            else:  # Companion and Best Friend
+                body = random.choice(GREETINGS_COMPANION)
         elif intent_type == "farewell":
             body = random.choice(FAREWELL_BODIES)
         elif intent_type == "thanks":
@@ -151,8 +175,6 @@ class ConversationCapability(BaseCapability):
         ending = random.choice(ENDINGS)
         emoji = random.choice(EMOJIS)
         
-        # Combine parts naturally
-        # For farewell or agreement, sometimes skip ending
         if intent_type in ["farewell", "agreement"]:
             message = f"{action}\n\n{body} {emoji}"
         else:

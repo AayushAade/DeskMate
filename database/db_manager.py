@@ -64,6 +64,39 @@ def init_db():
         )
     """)
     
+    # 6. Usage Analytics Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usage_analytics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            normalized TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            cache_hit INTEGER DEFAULT 0,
+            llm_called INTEGER DEFAULT 0,
+            latency_ms INTEGER NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # 7. Daily Statistics Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_statistics (
+            day TEXT PRIMARY KEY, -- Format: YYYY-MM-DD
+            interactions INTEGER DEFAULT 0,
+            llm_calls INTEGER DEFAULT 0,
+            cache_hits INTEGER DEFAULT 0,
+            avg_latency REAL DEFAULT 0.0
+        )
+    """)
+    
+    # 8. Active Days Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_days (
+            day TEXT PRIMARY KEY -- Format: YYYY-MM-DD
+        )
+    """)
+    
     conn.commit()
     conn.close()
     print("[DbManager] Database tables initialized successfully.")

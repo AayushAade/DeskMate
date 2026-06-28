@@ -7,8 +7,12 @@ from PyQt5.QtGui import QPainter
 from listener import GlobalInputListener
 from ai_backend import AIWorker
 from notifications.notification_manager import notification_manager
-from events.behavior_engine import tick as behavior_tick, get_mood
+from events.behavior_engine import tick as behavior_tick
 from services import scheduler
+from assistant.state.state_manager import state_manager
+from assistant.state.telemetry import telemetry_channel
+from datetime import datetime
+import random
 
 class AIAssistantChat(QWidget):
     def __init__(self, parent=None, parent_pet=None):
@@ -18,28 +22,32 @@ class AIAssistantChat(QWidget):
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
-        # Dimensions
-        self.resize(320, 420)
-        
-        # Chat history list for API context
+        # Chat history lists
         self.chat_history = []
-        # Visual chat history
         self.display_history = []
         self.worker = None
+        self.last_telemetry = None
         
         self.init_ui()
         
-        # Initial help text
+        # Connect to Telemetry Channel signals
+        telemetry_channel.routing_completed.connect(self.on_routing_completed)
+        telemetry_channel.state_updated.connect(self.update_state_view)
+        
+        # Initial help text & Dev view
         self.show_system_message("Welcome to Mochi's corner! Click the cat or type below to chat. 🐾")
+        self.update_state_view()
 
     def init_ui(self):
-        # Layouts
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        # Root layout to contain main chat and developer diagnostics side-by-side
+        root_layout = QHBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(6)
         
-        # Container frame for cat-themed warm rose/cream styling
+        # 1. Container frame for cat-themed warm rose/cream styling (Main Chat)
         self.container = QFrame(self)
         self.container.setObjectName("container")
+        self.container.setFixedWidth(320)
         self.container.setStyleSheet("""
             QFrame#container {
                 background-color: #fffafb;
@@ -86,7 +94,7 @@ class AIAssistantChat(QWidget):
         header_layout.addStretch()
         header_layout.addWidget(self.btn_close)
         
-        # Chat display area with custom scrollbars and warm rose text browser
+        # Chat display area
         self.chat_display = QTextBrowser(self)
         self.chat_display.setStyleSheet("""
             QTextBrowser {
@@ -168,7 +176,56 @@ class AIAssistantChat(QWidget):
         container_layout.addWidget(self.chat_display)
         container_layout.addLayout(input_layout)
         
-        main_layout.addWidget(self.container)
+        root_layout.addWidget(self.container)
+        
+        # 2. Developer Diagnostics Panel Frame (Collapsible Drawer)
+        self.dev_panel = QFrame(self)
+        self.dev_panel.setObjectName("dev_panel")
+        self.dev_panel.setFixedWidth(280)
+        self.dev_panel.setStyleSheet("""
+            QFrame#dev_panel {
+                background-color: #1e1e1e;
+                border: 2px solid #333333;
+                border-radius: 16px;
+            }
+        """)
+        
+        dev_layout = QVBoxLayout(self.dev_panel)
+        dev_layout.setContentsMargins(12, 12, 12, 12)
+        dev_layout.setSpacing(6)
+        
+        dev_title = QLabel("🛠️ Mochi Diagnostics", self)
+        dev_title.setStyleSheet("QLabel { color: #f43f5e; font-size: 13px; font-weight: bold; font-family: monospace; }")
+        dev_layout.addWidget(dev_title)
+        
+        self.dev_display = QTextBrowser(self)
+        self.dev_display.setStyleSheet("""
+            QTextBrowser {
+                background-color: transparent;
+                border: none;
+                color: #d4d4d4;
+                font-family: monospace;
+                font-size: 11px;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #2d2d2d;
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #555555;
+                min-height: 20px;
+                border-radius: 3px;
+            }
+        """)
+        dev_layout.addWidget(self.dev_display)
+        
+        root_layout.addWidget(self.dev_panel)
+        
+        # Collapsed by default
+        self.dev_panel.hide()
+        self.setFixedSize(320, 420)
         
         # Connections
         self.btn_close.clicked.connect(self.hide)
@@ -267,6 +324,101 @@ class AIAssistantChat(QWidget):
     def show_system_message(self, text):
         self.display_history.append(("system", text))
         self.rebuild_display()
+
+    def toggle_dev_panel(self):
+        """Toggles the visibility of the diagnostics drawer."""
+        if self.dev_panel.isHidden():
+            self.dev_panel.show()
+            self.setFixedSize(606, 420)  # Expand size
+        else:
+            self.dev_panel.hide()
+            self.setFixedSize(320, 420)  # Contract size
+        self.update_state_view()
+
+    def keyPressEvent(self, event):
+        # Listen to Cmd + Shift + D or Ctrl + Shift + D
+        is_d = (event.key() == Qt.Key_D)
+        is_shift = bool(event.modifiers() & Qt.ShiftModifier)
+        is_ctrl_or_cmd = bool(event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier))
+        
+        if is_d and is_shift and is_ctrl_or_cmd:
+            self.toggle_dev_panel()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def on_routing_completed(self, data):
+        self.last_telemetry = data
+        self.update_state_view()
+
+    def update_state_view(self):
+        """Builds and prints the HTML debug tree inside the developer drawer."""
+        # 1. Load active Mochi state
+        state_html = f"""
+        <font color="#fda4af"><b>=== MOCHI STATE ===</b></font><br/>
+        <b>Mood:</b> {state_manager.mood}<br/>
+        <b>Emotion:</b> {state_manager.emotion or 'None'}<br/>
+        <b>Affection:</b> {state_manager.affection_level}<br/>
+        <b>Energy:</b> {state_manager.energy}%<br/>
+        <b>Focus Mode:</b> {'ON (Auto)' if state_manager.focus_mode else 'OFF'}<br/>
+        <b>Idle:</b> {state_manager.idle_seconds}s (Typing: {state_manager.is_typing})<br/>
+        <b>Messages (Session):</b> {state_manager.active_session_messages}<br/>
+        <br/>
+        """
+        
+        # 2. Last Route Trace diagnostics
+        route_html = ""
+        timeline_html = ""
+        if self.last_telemetry:
+            t = self.last_telemetry
+            route_html = f"""
+            <font color="#fda4af"><b>=== LAST ROUTE INFO ===</b></font><br/>
+            <b>Query:</b> {t.get('query')}<br/>
+            <b>Normalized:</b> {t.get('normalized')}<br/>
+            <b>Intent:</b> {t.get('intent')}<br/>
+            <b>Capability:</b> {t.get('capability')}<br/>
+            <b>Cache Hit:</b> {'Yes' if t.get('cache_hit') else 'No'}<br/>
+            <b>LLM Fallback:</b> {'Yes' if t.get('llm_called') else 'No'}<br/>
+            <b>Overhead:</b> {t.get('router_overhead'):.2f}ms<br/>
+            <b>Execution:</b> {t.get('execution_latency'):.2f}ms<br/>
+            <b>Total:</b> {t.get('total_latency'):.2f}ms<br/>
+            <br/>
+            """
+            timeline_html = "<font color='#fda4af'><b>=== ROUTE TIMELINE ===</b></font><br/>"
+            for timestamp, step in t.get("timeline", []):
+                time_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
+                timeline_html += f"[{time_str}] {step}<br/>"
+            timeline_html += "<br/>"
+        else:
+            route_html = "<font color='#fda4af'><b>=== LAST ROUTE INFO ===</b></font><br/>No queries processed yet.<br/><br/>"
+            
+        # 3. Aggregate statistics
+        from services import analytics_service
+        stats = analytics_service.get_aggregate_stats()
+        stats_html = f"""
+        <font color="#fda4af"><b>=== USAGE STATISTICS ===</b></font><br/>
+        <b>Total Interactions:</b> {stats['total_interactions']}<br/>
+        <b>Local Hit Rate:</b> {stats['local_hits_percentage']:.1f}%<br/>
+        <b>LLM Fallback Rate:</b> {stats['llm_fallback_percentage']:.1f}%<br/>
+        <b>Cache Hit Rate:</b> {stats['cache_hits_percentage']:.1f}%<br/>
+        <b>Avg Latency:</b> {stats['avg_latency']:.1f}ms<br/>
+        """
+        if stats["top_capabilities"]:
+            stats_html += "<b>Top Capabilities:</b><br/>"
+            for tc in stats["top_capabilities"]:
+                stats_html += f"&nbsp;&nbsp;• {tc['capability']}: {tc['count']}<br/>"
+                
+        html = f"""
+        <html>
+        <body style="font-family: monospace; color: #d4d4d4; font-size: 10px; line-height: 1.2;">
+            {state_html}
+            {route_html}
+            {timeline_html}
+            {stats_html}
+        </body>
+        </html>
+        """
+        self.dev_display.setHtml(html)
 
     def rebuild_display(self):
         self.chat_display.clear()
@@ -400,12 +552,8 @@ class DesktopPet(QWidget):
         self.state = new_state
         self.frame_index = 0
         
-        if new_state == "TYPING":
-            self.anim_timer.setInterval(250)
-        elif new_state == "SLEEPING":
-            self.anim_timer.setInterval(300)
-        else:
-            self.anim_timer.setInterval(120)
+        profile = state_manager.get_animation_profile()
+        self.anim_timer.setInterval(profile.interval)
             
         print(f"[Debug] State changed: {old_state} -> {self.state}")
         self.update_animation()
@@ -459,11 +607,26 @@ class DesktopPet(QWidget):
         if proactive_msg:
             self.on_notification_received("🐾 Mochi Alert", proactive_msg)
             
-        # 3. Micro idle behaviors: trigger micro animation state changes
+        # Get active profile and update speed
+        profile = state_manager.get_animation_profile()
+        self.anim_timer.setInterval(profile.interval)
+            
+        # 3. Micro idle behaviors: trigger micro animation state changes via profile probabilities
         if self.idle_seconds > 0 and self.idle_seconds % 20 == 0:
             if self.state == "IDLE":
-                self.set_state("TYPING")
-                self.typing_cooldown = 2
+                actions = list(profile.probabilities.keys())
+                probs = list(profile.probabilities.values())
+                chosen = random.choices(actions, weights=probs, k=1)[0]
+                
+                # Map selected behavior to visual state
+                if chosen in ["yawn", "stretch", "sleep"]:
+                    self.set_state("SLEEPING")
+                    self.typing_cooldown = 4
+                elif chosen in ["hop", "typing"]:
+                    self.set_state("TYPING")
+                    self.typing_cooldown = 3
+                else:
+                    self.set_state("IDLE")
                 
         if self.idle_seconds >= 60:
             if self.state != "SLEEPING":
@@ -577,9 +740,19 @@ class DesktopPet(QWidget):
                 color: #ffffff;
             }
         """)
+        
+        # Focus Mode Action
+        focus_action = menu.addAction("Focus Mode")
+        focus_action.setCheckable(True)
+        focus_action.setChecked(state_manager.focus_mode)
+        
         exit_action = menu.addAction("Exit Pet")
         action = menu.exec_(self.mapToGlobal(event.pos()))
-        if action == exit_action:
+        
+        if action == focus_action:
+            state_manager.focus_mode = focus_action.isChecked()
+            print(f"[Pet] Focus Mode manually set to: {state_manager.focus_mode}")
+        elif action == exit_action:
             QApplication.quit()
 
     def closeEvent(self, event):
