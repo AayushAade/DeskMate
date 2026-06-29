@@ -12,6 +12,9 @@ def main():
     
     app = QApplication(sys.argv)
     
+    from config.settings import log_info, log_debug
+    log_info("Starting Mochi...")
+    
     # Hide the macOS Dock icon programmatically using PyObjC Cocoa
     if sys.platform == 'darwin':
         try:
@@ -19,7 +22,7 @@ def main():
             # NSApplicationActivationPolicyAccessory = 1 (removes from dock, retains overlay)
             Cocoa.NSApp.setActivationPolicy_(1)
         except Exception as e:
-            print(f"[Debug] Failed to set Cocoa activation policy: {e}")
+            log_debug(f"Failed to set Cocoa activation policy: {e}")
     
     # Establish project directories
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,7 +37,7 @@ def main():
         pet.show()
         pet.raise_()
         pet.activateWindow()
-        print("[Debug] Pet window shown, raised, and activated.")
+        log_debug("Pet window shown, raised, and activated.")
         
         sys.exit(app.exec_())
         

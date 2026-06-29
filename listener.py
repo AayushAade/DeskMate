@@ -1,11 +1,13 @@
 import time
 from PyQt5.QtCore import QObject, pyqtSignal
 from pynput import mouse, keyboard
+from config.settings import log_debug
 
 class GlobalInputListener(QObject):
     # Thread-safe signals to communicate back to the PyQt main thread
     activity_detected = pyqtSignal()
     typing_detected = pyqtSignal()
+    keypress_detected = pyqtSignal()
     
     def __init__(self):
         super().__init__()
@@ -30,7 +32,7 @@ class GlobalInputListener(QObject):
         self.keyboard_listener.daemon = True
         self.keyboard_listener.start()
         
-        print("[Debug] Global mouse and keyboard listeners started in background threads.")
+        log_debug("Global mouse and keyboard listeners started in background threads.")
 
     def stop(self):
         # Gracefully stop pynput listener threads
@@ -44,7 +46,7 @@ class GlobalInputListener(QObject):
                 self.keyboard_listener.stop()
             except Exception:
                 pass
-        print("[Debug] Global input listeners stopped.")
+        log_debug("Global input listeners stopped.")
 
     def _on_mouse_activity(self, *args):
         try:
@@ -69,6 +71,7 @@ class GlobalInputListener(QObject):
         try:
             # Trigger activity
             self.activity_detected.emit()
+            self.keypress_detected.emit()
         except RuntimeError:
             pass
         

@@ -1,0 +1,7 @@
+{
+    "loop": false,
+    "fps": 8,
+    "interruptible": false,
+    "priority": 4,
+    "next": "standing_idle"
+}

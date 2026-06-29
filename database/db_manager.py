@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from config.settings import DB_PATH
+from config.settings import DB_PATH, log_info, log_error
 
 def get_connection():
     """Returns a connection to the SQLite database with row formatting."""
@@ -9,7 +9,7 @@ def get_connection():
     return conn
 
 def init_db():
-    """Initializes database schema if tables do not exist."""
+    """Initializes database schema if tables do not exist and applies migrations."""
     db_dir = os.path.dirname(DB_PATH)
     if not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
@@ -42,7 +42,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task TEXT NOT NULL,
             due_at DATETIME NOT NULL,
-            completed INTEGER DEFAULT 0
+            status TEXT DEFAULT 'pending'
         )
     """)
     
@@ -97,9 +97,72 @@ def init_db():
         )
     """)
     
+    # 9. Schema Info Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_info (
+            version INTEGER PRIMARY KEY
+        )
+    """)
+    
+    # Check and apply migrations
+    cursor.execute("SELECT version FROM schema_info")
+    row = cursor.fetchone()
+    
+    target_version = 5
+    current_version = 0
+    if row:
+        current_version = row["version"]
+        
+    if current_version < target_version:
+        log_info(f"Running database migration: version {current_version} -> {target_version}")
+        
+        # Migrate reminders table completed column to status TEXT column
+        try:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'pending'")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+            
+        try:
+            cursor.execute("UPDATE reminders SET status = 'completed' WHERE completed = 1")
+        except sqlite3.OperationalError:
+            pass
+            
+        cursor.execute("INSERT OR REPLACE INTO schema_info (version) VALUES (?)", (target_version,))
+        conn.commit()
+        log_info(f"Database migrated successfully to version {target_version}.")
+    
     conn.commit()
     conn.close()
-    print("[DbManager] Database tables initialized successfully.")
+    log_info("Database tables verified.")
+
+def run_maintenance():
+    """Prunes completed/cancelled reminders older than 30 days and removes invalid entries."""
+    from datetime import datetime, timedelta, timezone
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Naive UTC datetime for standard string comparison matching SQLite
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 1. Clean up old completed/cancelled reminders
+        cursor.execute(
+            "DELETE FROM reminders WHERE (status = 'completed' OR status = 'cancelled') AND due_at <= ?",
+            (cutoff_str,)
+        )
+        
+        # 2. Drop invalid reminders
+        cursor.execute("DELETE FROM reminders WHERE task = '' OR task IS NULL OR due_at IS NULL")
+        
+        conn.commit()
+        log_info("Database maintenance completed successfully.")
+    except sqlite3.Error as e:
+        log_error(f"Database maintenance error: {e}")
+    finally:
+        conn.close()
 
 # Auto-initialize database on import
 init_db()
+run_maintenance()

@@ -2,6 +2,7 @@ import sqlite3
 import re
 from datetime import datetime, timezone
 from database import db_manager
+from config.settings import log_info, log_error, log_debug
 
 def _normalize(prompt: str) -> str:
     """Normalizes the prompt for strict exact matching in <0.1ms."""
@@ -35,16 +36,16 @@ def get_cached_response(prompt: str) -> str | None:
                     now_naive_utc = datetime.now(timezone.utc).replace(tzinfo=None)
                     time_diff = (now_naive_utc - db_time).total_seconds()
                     if time_diff > 600:  # 10 minutes
-                        print(f"[ResponseCache] Weather cache expired for: '{clean_p}' (aged {time_diff:.1f}s). Evicting.")
+                        log_info(f"Weather cache expired for: '{clean_p}' (aged {time_diff:.1f}s). Evicting.")
                         cursor.execute("DELETE FROM response_cache WHERE prompt = ?", (clean_p,))
                         conn.commit()
                         return None
                 except Exception as e:
-                    print(f"[ResponseCache] Error checking weather TTL: {e}")
+                    log_error(f"Error checking weather TTL: {e}")
                     
             res = response_text
     except sqlite3.Error as e:
-        print(f"[ResponseCache] Error loading cached response: {e}")
+        log_error(f"Error loading cached response: {e}")
     finally:
         conn.close()
     return res
@@ -84,6 +85,6 @@ def set_cached_response(prompt: str, response: str):
         )
         conn.commit()
     except sqlite3.Error as e:
-        print(f"[ResponseCache] Error saving cached response: {e}")
+        log_error(f"Error saving cached response: {e}")
     finally:
         conn.close()

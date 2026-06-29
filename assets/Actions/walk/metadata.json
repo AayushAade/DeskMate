@@ -1,0 +1,7 @@
+{
+    "loop": true,
+    "fps": 12,
+    "interruptible": true,
+    "priority": 2,
+    "next": null
+}

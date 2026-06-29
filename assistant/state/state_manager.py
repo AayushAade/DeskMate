@@ -2,6 +2,7 @@ import time
 from database import db_manager
 from events import event_bus
 from assistant.state.telemetry import telemetry_channel
+from config.settings import log_info, log_error, log_debug
 
 class AnimationProfile:
     def __init__(self, interval: int, probabilities: dict):
@@ -83,7 +84,7 @@ class StateManager:
                     except ValueError:
                         pass
         except Exception as e:
-            print(f"[StateManager] Error loading persisted state: {e}")
+            log_error(f"Error loading persisted state: {e}")
         finally:
             conn.close()
 
@@ -96,7 +97,7 @@ class StateManager:
             cursor.execute("INSERT OR REPLACE INTO preferences (key, value) VALUES ('mochi_energy', ?)", (str(self.energy),))
             conn.commit()
         except Exception as e:
-            print(f"[StateManager] Error saving state: {e}")
+            log_error(f"Error saving state: {e}")
         finally:
             conn.close()
 
@@ -125,7 +126,7 @@ class StateManager:
             active_days = max(1, cursor.fetchone()["count"])
             
         except Exception as e:
-            print(f"[StateManager] Error loading affection analytics: {e}")
+            log_error(f"Error loading affection analytics: {e}")
         finally:
             conn.close()
             
@@ -145,7 +146,7 @@ class StateManager:
             
         if old_level != self.affection_level:
             event_bus.publish("AFFECTION_CHANGED", old_level=old_level, new_level=self.affection_level)
-            print(f"[StateManager] Affection leveled up: {old_level} -> {self.affection_level}")
+            log_info(f"Affection leveled up: {old_level} -> {self.affection_level}")
 
     def get_animation_profile(self) -> AnimationProfile:
         """Returns the current animation profile (uses emotion first, falls back to mood)."""

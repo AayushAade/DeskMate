@@ -2,9 +2,25 @@ import sqlite3
 from datetime import datetime, timedelta
 from database import db_manager
 from events import event_bus
+from config.settings import log_info, log_error
+
+def initialize():
+    """Initializes the scheduler, counting and logging active pending reminders."""
+    conn = db_manager.get_connection()
+    count = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as count FROM reminders WHERE status = 'pending'")
+        count = cursor.fetchone()["count"]
+        log_info(f"Scheduler initialized. Loaded {count} pending reminders.")
+    except sqlite3.Error as e:
+        log_error(f"Error initializing scheduler: {e}")
+    finally:
+        conn.close()
+    return count
 
 def add_reminder(task: str, delay_seconds: int) -> int:
-    """Saves a reminder to SQLite to fire after delay_seconds."""
+    """Saves a reminder to SQLite with 'pending' status to fire after delay_seconds."""
     conn = db_manager.get_connection()
     reminder_id = -1
     try:
@@ -13,25 +29,25 @@ def add_reminder(task: str, delay_seconds: int) -> int:
         
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO reminders (task, due_at, completed) VALUES (?, ?, 0)",
+            "INSERT INTO reminders (task, due_at, status) VALUES (?, ?, 'pending')",
             (task, due_at_str)
         )
         conn.commit()
         reminder_id = cursor.lastrowid
-        print(f"[Scheduler] Added reminder ID {reminder_id} due at {due_at_str}: '{task}'")
+        log_info(f"Added reminder ID {reminder_id} due at {due_at_str}: '{task}'")
         
         # Fire event
         event_bus.publish("REMINDER_ADDED", id=reminder_id, task=task, due_at=due_at_str)
     except sqlite3.Error as e:
-        print(f"[Scheduler] Error adding reminder: {e}")
+        log_error(f"Error adding reminder: {e}")
     finally:
         conn.close()
     return reminder_id
 
 def check_pending_reminders() -> list:
     """
-    Checks for reminders that are past due, marks them completed, 
-    and returns them in a list of dicts.
+    Checks for reminders that are past due, marks them completed inside SQLite 
+    *before* dispatching notifications to avoid duplicate triggers.
     """
     conn = db_manager.get_connection()
     due_reminders = []
@@ -41,7 +57,7 @@ def check_pending_reminders() -> list:
         
         # Select active, due reminders
         cursor.execute(
-            "SELECT id, task FROM reminders WHERE completed = 0 AND due_at <= ?",
+            "SELECT id, task FROM reminders WHERE status = 'pending' AND due_at <= ?",
             (now_str,)
         )
         rows = cursor.fetchall()
@@ -51,17 +67,23 @@ def check_pending_reminders() -> list:
             task = row["task"]
             due_reminders.append({"id": r_id, "task": task})
             
-            # Mark as completed
-            cursor.execute("UPDATE reminders SET completed = 1 WHERE id = ?", (r_id,))
+            # Immediately mark as completed to prevent duplicate evaluations
+            cursor.execute("UPDATE reminders SET status = 'completed' WHERE id = ?", (r_id,))
             
-            # Fire event
-            event_bus.publish("REMINDER_DUE", id=r_id, task=task)
-            print(f"[Scheduler] Reminder due: ID {r_id} - '{task}'")
-            
+        # Commit status transitions first
         if rows:
             conn.commit()
+            
+            # Now trigger the alerts
+            for r in due_reminders:
+                event_bus.publish("REMINDER_DUE", id=r["id"], task=r["task"])
+                log_info(f"Reminder due: ID {r['id']} - '{r['task']}'")
+                
     except sqlite3.Error as e:
-        print(f"[Scheduler] Error checking reminders: {e}")
+        log_error(f"Error checking reminders: {e}")
     finally:
         conn.close()
     return due_reminders
+
+# Run scheduler initialization on import
+initialize()

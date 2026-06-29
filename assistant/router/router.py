@@ -13,6 +13,7 @@ from capabilities.reminders.reminders_capability import RemindersCapability
 
 from backends.ollama_backend import OllamaBackend
 from config import settings
+from config.settings import log_info, log_debug, log_error
 
 from assistant.router import query_normalizer, intent_detector, query_rewriter, response_cache
 from assistant.session import context_resolver
@@ -20,6 +21,14 @@ from memory import relevance_scorer
 from services import analytics_service
 from events import event_bus
 from assistant.state.state_manager import state_manager
+
+class RouterResult:
+    """Enforces a strict contract ensuring every route path has exactly one outcome."""
+    def __init__(self, success: bool, response: str = "", source: str = "", error: str = ""):
+        self.success = success
+        self.response = response
+        self.source = source
+        self.error = error
 
 class AssistantRouter:
     def __init__(self):
@@ -38,6 +47,7 @@ class AssistantRouter:
             AppsCapability()
         ]
         self._backend = None
+        self.last_result = None  # Holds the outcome of the last route_and_stream execution
 
     def get_backend(self):
         """Lazy-loads the LLM backend adapter to avoid blocking at startup."""
@@ -56,167 +66,175 @@ class AssistantRouter:
         chunks = []
         for chunk in self.route_and_stream(query, chat_history):
             chunks.append(chunk)
+            
+        result_obj = self.last_result
+        if result_obj:
+            if result_obj.success:
+                return result_obj.response
+            else:
+                return f"Error: {result_obj.error}"
         return "".join(chunks)
 
     def route_and_stream(self, query: str, chat_history: list):
         """
-        Streams query execution: yields text tokens.
+        Streams query execution: yields text tokens and populates self.last_result.
         Measures routing overhead, cache hits, execution latencies, and logs timeline steps.
         """
+        self.last_result = None
         timeline = []
         start_time = time.time()
         
-        # 1. Normalize query
-        timeline.append((time.time(), "Query normalization initiated"))
-        normalized = query_normalizer.normalize_query(query)
-        timeline.append((time.time(), f"Query normalized: '{normalized}'"))
-        
-        # 2. Detect conversational intent
-        timeline.append((time.time(), "Intent detection initiated"))
-        detected_intent = intent_detector.detect_intent(normalized)
-        intent_type = detected_intent.capability
-        timeline.append((time.time(), f"Detected conversational intent: '{intent_type}'"))
-        
-        # 3. Resolve context and rewrite query if needed (e.g. follow-ups)
-        timeline.append((time.time(), "Context resolution & query rewrite check"))
-        rewritten = query_rewriter.rewrite_query(normalized)
-        if rewritten != normalized:
-            timeline.append((time.time(), f"Query rewritten: '{rewritten}'"))
-        else:
-            timeline.append((time.time(), "Query remains unchanged"))
-        
-        # 4. Match capability
-        timeline.append((time.time(), "Capability matching started"))
-        matched_cap = None
-        matched_intent = None
-        
-        for cap in self.capabilities:
-            intent = cap.match_and_extract(rewritten)
-            if intent is not None:
-                matched_cap = cap
-                matched_intent = intent
-                break
+        try:
+            # 1. Normalize query
+            timeline.append((time.time(), "Query normalization initiated"))
+            normalized = query_normalizer.normalize_query(query)
+            timeline.append((time.time(), f"Query normalized: '{normalized}'"))
+            
+            # 2. Detect conversational intent
+            timeline.append((time.time(), "Intent detection initiated"))
+            detected_intent = intent_detector.detect_intent(normalized)
+            intent_type = detected_intent.capability
+            timeline.append((time.time(), f"Detected conversational intent: '{intent_type}'"))
+            
+            # 3. Resolve context and rewrite query if needed (e.g. follow-ups)
+            timeline.append((time.time(), "Context resolution & query rewrite check"))
+            rewritten = query_rewriter.rewrite_query(normalized)
+            if rewritten != normalized:
+                timeline.append((time.time(), f"Query rewritten: '{rewritten}'"))
+            else:
+                timeline.append((time.time(), "Query remains unchanged"))
+            
+            # 4. Match capability
+            timeline.append((time.time(), "Capability matching started"))
+            matched_cap = None
+            matched_intent = None
+            
+            for cap in self.capabilities:
+                intent = cap.match_and_extract(rewritten)
+                if intent is not None:
+                    matched_cap = cap
+                    matched_intent = intent
+                    break
+                    
+            # 5. Execute matching local capability (Instant single-chunk stream)
+            if matched_cap is not None:
+                router_overhead = (time.time() - start_time) * 1000
+                timeline.append((time.time(), f"Matched local capability: '{matched_cap.name}' (Overhead: {router_overhead:.2f}ms)"))
                 
-        # 5. Execute matching local capability (Instant single-chunk stream)
-        if matched_cap is not None:
+                exec_start = time.time()
+                result = matched_cap.execute(matched_intent.parameters)
+                exec_latency = (time.time() - exec_start) * 1000
+                total_latency = (time.time() - start_time) * 1000
+                
+                timeline.append((time.time(), f"Executed '{matched_cap.name}' in {exec_latency:.2f}ms (Total: {total_latency:.2f}ms)"))
+                
+                # Update session context with execution output data
+                context_resolver.update_context(matched_cap.name, result.data)
+                
+                # Update StateManager
+                state_manager.handle_event("USER_MESSAGE")
+                state_manager.current_capability = matched_cap.name
+                state_manager.last_capability = matched_cap.name
+                
+                # Map capability name to event name for transitions
+                cap_event = f"{matched_cap.name.upper()}_COMPLETED"
+                if matched_cap.name == "weather":
+                    cap_event = "WEATHER_FETCHED"
+                state_manager.handle_event(cap_event, result.data)
+                
+                # Write analytics log
+                analytics_service.log_interaction(
+                    query=query,
+                    normalized=normalized,
+                    intent=intent_type,
+                    capability=matched_cap.name,
+                    cache_hit=False,
+                    llm_called=False,
+                    latency_ms=int(total_latency)
+                )
+                
+                # Publish complete telemetry event
+                event_bus.publish(
+                    "ROUTING_COMPLETED",
+                    query=query,
+                    normalized=normalized,
+                    intent=intent_type,
+                    capability=matched_cap.name,
+                    cache_hit=False,
+                    llm_called=False,
+                    router_overhead=router_overhead,
+                    execution_latency=exec_latency,
+                    total_latency=total_latency,
+                    timeline=timeline
+                )
+                
+                self.last_result = RouterResult(success=True, response=result.message, source=matched_cap.name)
+                yield result.message
+                return
+                
+            # 6. Check response cache to avoid LLM inference
+            timeline.append((time.time(), "Checking response cache..."))
+            cached = response_cache.get_cached_response(rewritten)
+            if cached:
+                router_overhead = (time.time() - start_time) * 1000
+                total_latency = router_overhead
+                timeline.append((time.time(), f"Cache hit! Evading LLM call (Total: {total_latency:.2f}ms)"))
+                
+                # Update StateManager
+                state_manager.handle_event("USER_MESSAGE")
+                state_manager.current_capability = "llm"
+                context_resolver.update_context("llm", {})
+                
+                analytics_service.log_interaction(
+                    query=query,
+                    normalized=normalized,
+                    intent=intent_type,
+                    capability="llm (cached)",
+                    cache_hit=True,
+                    llm_called=False,
+                    latency_ms=int(total_latency)
+                )
+                
+                event_bus.publish(
+                    "ROUTING_COMPLETED",
+                    query=query,
+                    normalized=normalized,
+                    intent=intent_type,
+                    capability="llm (cached)",
+                    cache_hit=True,
+                    llm_called=False,
+                    router_overhead=router_overhead,
+                    execution_latency=0.0,
+                    total_latency=total_latency,
+                    timeline=timeline
+                )
+                
+                self.last_result = RouterResult(success=True, response=cached, source="cache")
+                yield cached
+                return
+
+            # 7. Fall back to LLM backend (Last Resort)
             router_overhead = (time.time() - start_time) * 1000
-            timeline.append((time.time(), f"Matched local capability: '{matched_cap.name}' (Overhead: {router_overhead:.2f}ms)"))
+            timeline.append((time.time(), f"Cache miss. Routing to LLM stream fallback (Overhead: {router_overhead:.2f}ms)"))
             
-            exec_start = time.time()
-            result = matched_cap.execute(matched_intent.parameters)
-            exec_latency = (time.time() - exec_start) * 1000
-            total_latency = (time.time() - start_time) * 1000
-            
-            timeline.append((time.time(), f"Executed '{matched_cap.name}' in {exec_latency:.2f}ms (Total: {total_latency:.2f}ms)"))
-            
-            # Update session context with execution output data
-            context_resolver.update_context(matched_cap.name, result.data)
-            
-            # Update StateManager
-            state_manager.handle_event("USER_MESSAGE")
-            # Set state manager capabilities
-            state_manager.current_capability = matched_cap.name
-            state_manager.last_capability = matched_cap.name
-            
-            # Map capability name to event name for transitions
-            cap_event = f"{matched_cap.name.upper()}_COMPLETED"
-            # Special naming conversions if needed
-            if matched_cap.name == "weather":
-                cap_event = "WEATHER_FETCHED"
-            state_manager.handle_event(cap_event, result.data)
-            
-            # Write analytics log
-            analytics_service.log_interaction(
-                query=query,
-                normalized=normalized,
-                intent=intent_type,
-                capability=matched_cap.name,
-                cache_hit=False,
-                llm_called=False,
-                latency_ms=int(total_latency)
-            )
-            
-            # Publish complete telemetry event
-            event_bus.publish(
-                "ROUTING_COMPLETED",
-                query=query,
-                normalized=normalized,
-                intent=intent_type,
-                capability=matched_cap.name,
-                cache_hit=False,
-                llm_called=False,
-                router_overhead=router_overhead,
-                execution_latency=exec_latency,
-                total_latency=total_latency,
-                timeline=timeline
-            )
-            
-            yield result.message
-            return
-            
-        # 6. Check response cache to avoid LLM inference
-        timeline.append((time.time(), "Checking response cache..."))
-        cached = response_cache.get_cached_response(rewritten)
-        if cached:
-            router_overhead = (time.time() - start_time) * 1000
-            total_latency = router_overhead
-            timeline.append((time.time(), f"Cache hit! Evading LLM call (Total: {total_latency:.2f}ms)"))
+            # Retrieve relevant memories for LLM prompt enhancement
+            timeline.append((time.time(), "Querying memory relevance scorer..."))
+            context = relevance_scorer.retrieve_relevant_context(rewritten)
+            memory_count = len(context.split("\n")) if context else 0
+            timeline.append((time.time(), f"Injected {memory_count} memory facts into system prompt"))
             
             # Update StateManager
             state_manager.handle_event("USER_MESSAGE")
             state_manager.current_capability = "llm"
             context_resolver.update_context("llm", {})
             
-            analytics_service.log_interaction(
-                query=query,
-                normalized=normalized,
-                intent=intent_type,
-                capability="llm (cached)",
-                cache_hit=True,
-                llm_called=False,
-                latency_ms=int(total_latency)
-            )
+            backend = self.get_backend()
             
-            event_bus.publish(
-                "ROUTING_COMPLETED",
-                query=query,
-                normalized=normalized,
-                intent=intent_type,
-                capability="llm (cached)",
-                cache_hit=True,
-                llm_called=False,
-                router_overhead=router_overhead,
-                execution_latency=0.0,
-                total_latency=total_latency,
-                timeline=timeline
-            )
+            # Stream response from backend, accumulate tokens, and yield
+            tokens = []
+            exec_start = time.time()
+            timeline.append((time.time(), "Inference started on LLM model"))
             
-            yield cached
-            return
-
-        # 7. Fall back to LLM backend (Last Resort)
-        router_overhead = (time.time() - start_time) * 1000
-        timeline.append((time.time(), f"Cache miss. Routing to LLM stream fallback (Overhead: {router_overhead:.2f}ms)"))
-        
-        # Retrieve relevant memories for LLM prompt enhancement
-        timeline.append((time.time(), "Querying memory relevance scorer..."))
-        context = relevance_scorer.retrieve_relevant_context(rewritten)
-        memory_count = len(context.split("\n")) if context else 0
-        timeline.append((time.time(), f"Injected {memory_count} memory facts into system prompt"))
-        
-        # Update StateManager
-        state_manager.handle_event("USER_MESSAGE")
-        state_manager.current_capability = "llm"
-        context_resolver.update_context("llm", {})
-        
-        backend = self.get_backend()
-        
-        # Stream response from backend, accumulate tokens, and yield
-        tokens = []
-        exec_start = time.time()
-        timeline.append((time.time(), "Inference started on LLM model"))
-        
-        try:
             for token in backend.generate_stream(chat_history, context=context):
                 tokens.append(token)
                 yield token
@@ -253,6 +271,14 @@ class AssistantRouter:
                 total_latency=total_latency,
                 timeline=timeline
             )
+            
+            # Guarantee outcome response
+            if not full_response.strip():
+                raise RuntimeError("No tokens were returned by the LLM backend fallback.")
+                
+            self.last_result = RouterResult(success=True, response=full_response, source="llm")
+            
         except Exception as e:
-            # Re-raise so worker catches and reports error
+            log_error(f"Routing exception encountered: {e}")
+            self.last_result = RouterResult(success=False, error=str(e), source="router_fallback")
             raise e

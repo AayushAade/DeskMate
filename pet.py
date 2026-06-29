@@ -13,6 +13,8 @@ from assistant.state.state_manager import state_manager
 from assistant.state.telemetry import telemetry_channel
 from datetime import datetime
 import random
+from config.settings import log_info, log_error, log_debug
+from events import event_bus
 
 class AIAssistantChat(QWidget):
     def __init__(self, parent=None, parent_pet=None):
@@ -27,6 +29,24 @@ class AIAssistantChat(QWidget):
         self.display_history = []
         self.worker = None
         self.last_telemetry = None
+        
+        # Streaming and Refresh queue state variables
+        self.is_streaming = False
+        self.streaming_buffer = ""
+        self.streaming_timer = QTimer(self)
+        self.streaming_timer.timeout.connect(self._on_streaming_timer_tick)
+        
+        self.refresh_pending = False
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._on_refresh_timer_tick)
+        
+        self._updating_ui = False
+        self.geometry_locked = False
+        
+        # Metrics
+        self.metrics_refresh_requests = 0
+        self.metrics_actual_repaints = 0
+        self.metrics_avg_rebuild_time = 0.0
         
         self.init_ui()
         
@@ -253,7 +273,8 @@ class AIAssistantChat(QWidget):
         # Trigger parent pet to start typing (thinking animation)
         if self.parent_pet:
             self.parent_pet.is_thinking = True
-            self.parent_pet.set_state("TYPING")
+            from events.behavior_engine import scheduler_instance, HIGH
+            scheduler_instance.request_override("typing", HIGH)
             
         self.is_streaming = False
         
@@ -274,56 +295,99 @@ class AIAssistantChat(QWidget):
         """)
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
+    def request_ui_refresh(self):
+        self.metrics_refresh_requests += 1
+        if not self.refresh_pending:
+            self.refresh_pending = True
+            self.refresh_timer.start(50)  # coalesced: fires once after 50ms
+
+    def _on_refresh_timer_tick(self):
+        self.refresh_timer.stop()
+        self.refresh_pending = False
+        self.rebuild_display()
+
+    def _on_streaming_timer_tick(self):
+        if self.streaming_buffer:
+            if self.display_history:
+                role, text = self.display_history[-1]
+                if role == "model":
+                    self.display_history[-1] = (role, text + self.streaming_buffer)
+            self.streaming_buffer = ""
+            self.request_ui_refresh()
+
     def on_token_received(self, token):
         if not self.is_streaming:
             self.is_streaming = True
+            self.geometry_locked = True
             self.display_history.append(("model", ""))
+            self.streaming_buffer = ""
+            self.streaming_timer.start(100)  # Capped: refresh token text block buffer every 100ms
             
-        role, text = self.display_history[-1]
-        self.display_history[-1] = (role, text + token)
-        self.rebuild_display()
+        self.streaming_buffer += token
 
     def on_worker_finished(self, response_text):
         self.message_input.setEnabled(True)
         self.btn_send.setEnabled(True)
         self.message_input.setFocus()
         
+        self.streaming_timer.stop()
+        
         if self.parent_pet:
             self.parent_pet.is_thinking = False
-            self.parent_pet.set_state("IDLE")
+            from events.behavior_engine import scheduler_instance
+            scheduler_instance.release_override("typing")
+            self.parent_pet.set_state("idle")
             
         self.chat_history.append({"role": "model", "parts": [{"text": response_text}]})
         
-        if not self.is_streaming:
-            self.append_message("model", response_text)
-        else:
+        if self.display_history and self.display_history[-1][0] == "model":
             self.display_history[-1] = ("model", response_text)
-            self.rebuild_display()
+        else:
+            self.display_history.append(("model", response_text))
+            
+        self.streaming_buffer = ""
+        self.is_streaming = False
+        self.geometry_locked = False
+        self.rebuild_display()
+        
+        # After streaming finishes, perform exactly one geometry update
+        if self.parent_pet:
+            self.parent_pet.reposition_chat_window()
 
     def on_worker_error(self, error_message):
         self.message_input.setEnabled(True)
         self.btn_send.setEnabled(True)
         self.message_input.setFocus()
         
+        self.streaming_timer.stop()
+        self.streaming_buffer = ""
+        self.is_streaming = False
+        self.geometry_locked = False
+        
         if self.parent_pet:
             self.parent_pet.is_thinking = False
-            self.parent_pet.set_state("IDLE")
+            from events.behavior_engine import scheduler_instance
+            scheduler_instance.release_override("typing")
+            self.parent_pet.set_state("idle")
             
         if self.chat_history and self.chat_history[-1]["role"] == "user":
             self.chat_history.pop()
             
-        if hasattr(self, 'is_streaming') and self.is_streaming:
+        if self.display_history and self.display_history[-1][0] == "model":
             self.display_history.pop()
             
         self.append_message("model", error_message)
+        
+        if self.parent_pet:
+            self.parent_pet.reposition_chat_window()
 
     def append_message(self, role, text):
         self.display_history.append((role, text))
-        self.rebuild_display()
+        self.request_ui_refresh()
 
     def show_system_message(self, text):
         self.display_history.append(("system", text))
-        self.rebuild_display()
+        self.request_ui_refresh()
 
     def toggle_dev_panel(self):
         """Toggles the visibility of the diagnostics drawer."""
@@ -408,6 +472,18 @@ class AIAssistantChat(QWidget):
             for tc in stats["top_capabilities"]:
                 stats_html += f"&nbsp;&nbsp;• {tc['capability']}: {tc['count']}<br/>"
                 
+        # 4. Rendering statistics
+        from events.event_bus import get_dropped_events_count
+        rendering_html = f"""
+        <font color="#fda4af"><b>=== RENDERING STATISTICS ===</b></font><br/>
+        <b>Refresh Requests:</b> {self.metrics_refresh_requests}<br/>
+        <b>Actual Repaints:</b> {self.metrics_actual_repaints}<br/>
+        <b>Pending UI Refreshes:</b> {1 if self.refresh_pending else 0}<br/>
+        <b>Streaming Buffer Size:</b> {len(self.streaming_buffer)} chars<br/>
+        <b>Dropped Duplicate Events:</b> {get_dropped_events_count()}<br/>
+        <b>Avg Rebuild Time:</b> {self.metrics_avg_rebuild_time:.2f}ms<br/>
+        """
+                
         html = f"""
         <html>
         <body style="font-family: monospace; color: #d4d4d4; font-size: 10px; line-height: 1.2;">
@@ -415,48 +491,71 @@ class AIAssistantChat(QWidget):
             {route_html}
             {timeline_html}
             {stats_html}
+            {rendering_html}
         </body>
         </html>
         """
         self.dev_display.setHtml(html)
 
     def rebuild_display(self):
-        self.chat_display.clear()
-        html = ""
-        for role, text in self.display_history:
-            escaped_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if self._updating_ui:
+            return
+        self._updating_ui = True
+        
+        import time
+        start_time = time.perf_counter()
+        
+        try:
+            self.chat_display.clear()
+            html = ""
+            for role, text in self.display_history:
+                escaped_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                escaped_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped_text)
+                escaped_text = re.sub(r'^\*\s+', r'• ', escaped_text, flags=re.MULTILINE)
+                formatted_text = escaped_text.replace("\n", "<br/>")
+                
+                if role == "user":
+                    html += f"""
+                        <div style="margin: 8px 0; text-align: right;">
+                            <span style="background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; border-radius: 12px 12px 2px 12px; padding: 8px 12px; display: inline-block; max-width: 80%; text-align: left; font-family: sans-serif;">
+                                <b>You</b><br/>{formatted_text}
+                            </span>
+                        </div>
+                    """
+                elif role == "model":
+                    html += f"""
+                        <div style="margin: 8px 0; text-align: left;">
+                            <span style="background-color: #ffffff; color: #4c0519; border: 1px solid #ffe4e6; border-radius: 12px 12px 12px 2px; padding: 8px 12px; display: inline-block; max-width: 80%; font-family: sans-serif;">
+                                <b>🐾 Mochi</b><br/>{formatted_text}
+                            </span>
+                        </div>
+                    """
+                else: # system
+                    html += f"""
+                        <div style="margin: 8px 0; text-align: center;">
+                            <span style="color: #fda4af; font-size: 11px; font-style: italic; font-family: sans-serif;">
+                                {formatted_text}
+                            </span>
+                        </div>
+                    """
+            self.chat_display.setHtml(html)
+            self.metrics_actual_repaints += 1
             
-            # Simple markdown parsing
-            escaped_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped_text)
-            escaped_text = re.sub(r'^\*\s+', r'• ', escaped_text, flags=re.MULTILINE)
-            formatted_text = escaped_text.replace("\n", "<br/>")
+            # Smart Auto-Scroll to bottom: only if user is already near bottom (within 30px)
+            scrollbar = self.chat_display.verticalScrollBar()
+            is_near_bottom = (scrollbar.maximum() - scrollbar.value() <= 30) or (scrollbar.value() == 0)
+            if is_near_bottom:
+                QTimer.singleShot(10, lambda: scrollbar.setValue(scrollbar.maximum()))
+                
+        finally:
+            self._updating_ui = False
             
-            if role == "user":
-                html += f"""
-                    <div style="margin: 8px 0; text-align: right;">
-                        <span style="background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; border-radius: 12px 12px 2px 12px; padding: 8px 12px; display: inline-block; max-width: 80%; text-align: left; font-family: sans-serif;">
-                            <b>You</b><br/>{formatted_text}
-                        </span>
-                    </div>
-                """
-            elif role == "model":
-                html += f"""
-                    <div style="margin: 8px 0; text-align: left;">
-                        <span style="background-color: #ffffff; color: #4c0519; border: 1px solid #ffe4e6; border-radius: 12px 12px 12px 2px; padding: 8px 12px; display: inline-block; max-width: 80%; font-family: sans-serif;">
-                            <b>🐾 Mochi</b><br/>{formatted_text}
-                        </span>
-                    </div>
-                """
-            else: # system
-                html += f"""
-                    <div style="margin: 8px 0; text-align: center;">
-                        <span style="color: #fda4af; font-size: 11px; font-style: italic; font-family: sans-serif;">
-                            {formatted_text}
-                        </span>
-                    </div>
-                """
-        self.chat_display.setHtml(html)
-        QTimer.singleShot(10, lambda: self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum()))
+        elapsed = (time.perf_counter() - start_time) * 1000.0
+        self.metrics_avg_rebuild_time = 0.9 * self.metrics_avg_rebuild_time + 0.1 * elapsed
+        
+        # Real-time refresh for stats panel if expanded
+        if not self.dev_panel.isHidden():
+            self.update_state_view()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -496,7 +595,6 @@ class DesktopPet(QWidget):
         
         # Idle tracking
         self.idle_seconds = 0
-        self.typing_cooldown = 0
         self.is_thinking = False
         
         # Chat assistant window
@@ -518,14 +616,29 @@ class DesktopPet(QWidget):
         self.behavior_timer.timeout.connect(self.update_behavior)
         self.behavior_timer.start(1000)  
         
+        # 4. Typing Debounce Timer
+        self.typing_debounce_timer = QTimer(self)
+        self.typing_debounce_timer.setSingleShot(True)
+        self.typing_debounce_timer.timeout.connect(self.on_typing_finished)
+        
         # Global input listener integration
         self.input_listener = GlobalInputListener()
         self.input_listener.activity_detected.connect(self.on_global_activity)
-        self.input_listener.typing_detected.connect(self.on_global_typing)
+        self.input_listener.keypress_detected.connect(self.on_global_typing)
         self.input_listener.start()
         
         # Connect to Notification Manager signals
         notification_manager.notification_triggered.connect(self.on_notification_received)
+        
+        # Subscribe to behavior events
+        event_bus.subscribe("BEHAVIOR_CHANGED", self._on_behavior_changed)
+        
+        # Instantiate attention tracker
+        from events.attention_tracker import tracker_instance
+        tracker_instance.get_pet_geometry = self.geometry
+        tracker_instance.get_pet_facing = lambda: self.facing_right
+        self.tracker = tracker_instance
+        self.tracker.start()
         
         # Initialize position and animation
         self.init_position()
@@ -542,7 +655,7 @@ class DesktopPet(QWidget):
         x = screen_geom.right() - 138  # 128px size + 10px margin
         y = screen_geom.bottom() - 138 # 128px size + 10px margin
         self.setGeometry(x, y, 128, 128)
-        print(f"[Debug] Position initialized bottom-right: x={x}, y={y}")
+        log_debug(f"Position initialized bottom-right: x={x}, y={y}")
 
     def set_state(self, new_state):
         if self.state == new_state:
@@ -552,23 +665,25 @@ class DesktopPet(QWidget):
         self.state = new_state
         self.frame_index = 0
         
-        profile = state_manager.get_animation_profile()
-        self.anim_timer.setInterval(profile.interval)
+        # Resolve frame duration dynamic mapping via animation.json metadata if present
+        meta = self.assets.get_animation_metadata(new_state)
+        fps = meta.get("fps", 8)
+        self.anim_timer.setInterval(int(1000 / fps))
+        
+        # Check sound events
+        sound = meta.get("sound")
+        if sound:
+            event_bus.publish("PLAY_SOUND", name=sound)
             
-        print(f"[Debug] State changed: {old_state} -> {self.state}")
+        log_debug(f"State changed: {old_state} -> {self.state}")
         self.update_animation()
 
     def get_current_animation_list(self):
-        if self.state == "SLEEPING":
-            return self.assets.sleep_right if self.facing_right else self.assets.sleep_left
-        elif self.state == "TYPING":
-            return self.assets.typing_right if self.facing_right else self.assets.typing_left
-        else:  # IDLE
-            return self.assets.idle_right if self.facing_right else self.assets.idle_left
+        return self.assets.get_animation_frames(self.state, self.facing_right)
 
     def update_animation(self):
         anim_list = self.get_current_animation_list()
-        if not anim_list:
+        if not anim_list or len(anim_list) == 0:
             return
             
         self.frame_index = (self.frame_index + 1) % len(anim_list)
@@ -583,20 +698,56 @@ class DesktopPet(QWidget):
         if self.x() != x or self.y() != y:
             self.move(x, y)
 
+    def reposition_chat_window(self):
+        if self.chat_window and self.chat_window.isVisible():
+            if self.chat_window.geometry_locked:
+                return  # Skip if chat geometry is locked during streaming
+                
+            chat_w = self.chat_window.width()
+            chat_h = self.chat_window.height()
+            target_x = self.x() - chat_w - 10
+            target_y = (self.y() + 128) - chat_h
+            
+            # Boundary checks
+            screen_geom = self.get_screen_geometry()
+            if target_x < screen_geom.left():
+                target_x = screen_geom.left() + 10
+            if target_y < screen_geom.top():
+                target_y = screen_geom.top() + 10
+                
+            # Only reposition if distance > 2 pixels
+            current_pos = self.chat_window.pos()
+            import math
+            distance = math.hypot(target_x - current_pos.x(), target_y - current_pos.y())
+            if distance > 2:
+                self.chat_window.move(target_x, target_y)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self.reposition_chat_window()
+
     def update_behavior(self):
+        # Alternate animations while thinking
         if self.is_thinking:
-            if self.state != "TYPING":
-                self.set_state("TYPING")
+            self.thinking_ticks = getattr(self, "thinking_ticks", 0) + 1
+            # Alternate: 3 seconds typing, 2 seconds idle
+            cycle = self.thinking_ticks % 5
+            if cycle < 3:
+                if self.state != "typing":
+                    self.set_state("typing")
+            else:
+                if self.state != "idle":
+                    self.set_state("idle")
             self.idle_seconds = 0
             return
             
-        if self.state == "TYPING":
-            self.typing_cooldown -= 1
-            if self.typing_cooldown <= 0:
-                self.set_state("IDLE")
+        self.thinking_ticks = 0
         
         # Idle timer check
         self.idle_seconds += 1
+        
+        # Update StateManager idle tracking so scheduler can query it
+        state_manager.idle_seconds = self.idle_seconds
         
         # 1. Check for due reminders from the Scheduler
         scheduler.check_pending_reminders()
@@ -604,33 +755,19 @@ class DesktopPet(QWidget):
         # 2. Behavior engine tick (every 1s)
         is_active = (self.idle_seconds <= 1)
         proactive_msg = behavior_tick(self.idle_seconds, is_active)
-        if proactive_msg:
+        if proactive_msg and not state_manager.focus_mode:
             self.on_notification_received("🐾 Mochi Alert", proactive_msg)
             
-        # Get active profile and update speed
-        profile = state_manager.get_animation_profile()
-        self.anim_timer.setInterval(profile.interval)
+        # Deadband Hysteresis Facing (only active when pet is idle)
+        if self.idle_seconds > 2 and not self.is_thinking and not state_manager.is_typing:
+            cursor_pos = self.tracker.get_cursor_position()
+            pet_center_x = self.x() + self.width() // 2
             
-        # 3. Micro idle behaviors: trigger micro animation state changes via profile probabilities
-        if self.idle_seconds > 0 and self.idle_seconds % 20 == 0:
-            if self.state == "IDLE":
-                actions = list(profile.probabilities.keys())
-                probs = list(profile.probabilities.values())
-                chosen = random.choices(actions, weights=probs, k=1)[0]
-                
-                # Map selected behavior to visual state
-                if chosen in ["yawn", "stretch", "sleep"]:
-                    self.set_state("SLEEPING")
-                    self.typing_cooldown = 4
-                elif chosen in ["hop", "typing"]:
-                    self.set_state("TYPING")
-                    self.typing_cooldown = 3
-                else:
-                    self.set_state("IDLE")
-                
-        if self.idle_seconds >= 60:
-            if self.state != "SLEEPING":
-                self.set_state("SLEEPING")
+            # Use hysteresis threshold of 30px
+            if cursor_pos[0] < pet_center_x - 30:
+                self.facing_right = False
+            elif cursor_pos[0] > pet_center_x + 30:
+                self.facing_right = True
 
     def on_notification_received(self, title, message):
         if self.chat_window is None:
@@ -679,36 +816,154 @@ class DesktopPet(QWidget):
             self.chat_window.raise_()
             self.chat_window.activateWindow()
 
+    def _on_behavior_changed(self, name, duration):
+        if self.is_thinking:
+            return
+        if state_manager.is_typing:
+            return
+        self.set_state(name)
+
     def on_global_activity(self):
         self.idle_seconds = 0
-        if self.state == "SLEEPING":
-            print("[Debug] Activity detected, waking pet.")
-            self.set_state("IDLE")
+        state_manager.idle_seconds = 0
+        if self.state == "sleep" or self.state == "SLEEPING":
+            self.set_state("idle")
 
     def on_global_typing(self):
         if self.is_thinking:
             return  # Skip manual keyboard events if pet is currently in thinking animation
             
         self.idle_seconds = 0
-        if self.state == "SLEEPING":
-            self.set_state("IDLE")
+        if self.state == "sleep" or self.state == "SLEEPING":
+            self.set_state("idle")
+            
+        # Typing decrements Mochi's cursor interest levels
+        if hasattr(self, "tracker"):
+            self.tracker.change_interest(-2.0)
         
         # Skip typing animation if chat box input field has focus
         if self.chat_window and self.chat_window.message_input.hasFocus():
             return
             
-        # Show typing animation briefly
-        if self.state == "IDLE":
-            self.set_state("TYPING")
-            self.typing_cooldown = 2
-        elif self.state == "TYPING":
-            self.typing_cooldown = 2
+        # Debounced typing state transition
+        if not state_manager.is_typing:
+            state_manager.is_typing = True
+            from events.behavior_engine import scheduler_instance, HIGH
+            scheduler_instance.request_override("typing", HIGH)
+            
+        # Restart debounce timer
+        self.typing_debounce_timer.start(2000)
+
+    def on_typing_finished(self):
+        """Called when user has not typed for 2 seconds."""
+        if self.is_thinking:
+            return
+        state_manager.is_typing = False
+        from events.behavior_engine import scheduler_instance
+        scheduler_instance.release_override("typing")
+
+    def show_preview_dialog(self):
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QListWidget, QLabel, QPushButton
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🐾 Animation Preview")
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #202020;
+                color: #e0e0e0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            QLabel {
+                color: #fda4af;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QListWidget {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+                border: 1px solid #3d3d3d;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: #3b82f6;
+                color: #ffffff;
+            }
+            QPushButton {
+                background-color: #3b82f6;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+        """)
+        layout = QVBoxLayout(dialog)
+        label = QLabel("Select variant to preview:", dialog)
+        layout.addWidget(label)
+        
+        list_widget = QListWidget(dialog)
+        variants = [
+            "idle", "look_left", "look_right", "tail_flick", "stretch", "groom", "yawn", "sit", "sleep", "wake",
+            "[Simulate Cursor Near]", "[Simulate Cursor Fast]", "[Simulate Cursor Idle]", "[Simulate Hover]"
+        ]
+        list_widget.addItems(variants)
+        layout.addWidget(list_widget)
+        
+        btn = QPushButton("Play Selection / Simulate", dialog)
+        layout.addWidget(btn)
+        
+        def play_selected():
+            item = list_widget.currentItem()
+            if item:
+                chosen = item.text()
+                from events.behavior_engine import scheduler_instance, HIGH, NORMAL
+                from events import event_bus
+                
+                if chosen == "[Simulate Cursor Near]":
+                    pet_center = self.tracker.get_pet_center()
+                    self.tracker.current_pos = (pet_center[0] - 100, pet_center[1])
+                    self.tracker.is_near = True
+                    self.tracker.time_in_zone = 5.0
+                    event_bus.publish("CURSOR_NEAR")
+                elif chosen == "[Simulate Cursor Fast]":
+                    self.tracker.velocity = 1500.0
+                    event_bus.publish("CURSOR_FAST")
+                elif chosen == "[Simulate Cursor Idle]":
+                    self.tracker.velocity = 0.0
+                    event_bus.publish("CURSOR_IDLE")
+                elif chosen == "[Simulate Hover]":
+                    pet_center = self.tracker.get_pet_center()
+                    self.tracker.current_pos = (pet_center[0] - 10, pet_center[1] - 10)
+                    self.tracker.is_near = True
+                    self.tracker.is_hovering = True
+                    event_bus.publish("CURSOR_HOVERING")
+                else:
+                    scheduler_instance.request_override(chosen, HIGH, duration=4.0)
+                dialog.accept()
+                
+        list_widget.itemDoubleClicked.connect(play_selected)
+        btn.clicked.connect(play_selected)
+        
+        dialog.setLayout(layout)
+        dialog.resize(260, 340)
+        dialog.exec_()
 
     # Click triggers
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if self.state == "SLEEPING":
-                self.set_state("IDLE")
+            # Pet interaction increases cursor interest levels
+            if hasattr(self, "tracker"):
+                self.tracker.change_interest(20.0)
+                
+            if self.state == "sleep" or self.state == "SLEEPING":
+                self.set_state("idle")
                 self.idle_seconds = 0
                 event.accept()
                 return
@@ -746,12 +1001,17 @@ class DesktopPet(QWidget):
         focus_action.setCheckable(True)
         focus_action.setChecked(state_manager.focus_mode)
         
+        # Preview Animations Action
+        preview_action = menu.addAction("Preview Animations...")
+        
         exit_action = menu.addAction("Exit Pet")
         action = menu.exec_(self.mapToGlobal(event.pos()))
         
         if action == focus_action:
             state_manager.focus_mode = focus_action.isChecked()
-            print(f"[Pet] Focus Mode manually set to: {state_manager.focus_mode}")
+            log_info(f"Focus Mode manually set to: {state_manager.focus_mode}")
+        elif action == preview_action:
+            self.show_preview_dialog()
         elif action == exit_action:
             QApplication.quit()
 
@@ -768,7 +1028,7 @@ class DesktopPet(QWidget):
                 from memory import episodic_memory
                 episodic_memory.save_session_summary(mapped_history)
             except Exception as e:
-                print(f"[Pet] Error saving session summary on close: {e}")
+                log_error(f"Error saving session summary on close: {e}")
 
         if self.chat_window:
             self.chat_window.close()
