@@ -1,109 +1,211 @@
-# 🐾 Mochi (DeskMate) — The Intelligent AI Desktop Pet
+# 🐾 DeskMate
 
-Mochi (DeskMate) is a cute, interactive, and highly intelligent virtual desktop pet for macOS (and other platforms). Built on top of **PyQt5** and integrated with a local **Ollama** AI backend, Mochi sits at the bottom-right corner of your desktop, looking around at your cursor, reacting to your activity, managing memory of your accomplishments, and helping you with various system tasks through tool execution.
-
----
-
-## ✨ Features
-
-- **Transparent Desktop Overlay**: Borderless, translucent PyQt5 window that smoothly stays on top of other applications at the bottom-right corner.
-- **Dynamic Animations**: Hand-crafted frame animations for different states: `idle`, `walk`, `sleep`, `typing` (thinking), `eating`, `fall`, and `lie`.
-- **Global Input Listener**: Uses `pynput` to listen to global mouse and keyboard activity to track when you are active. 
-- **Attention Tracking & Hysteresis-based Head Movement**: Mochi actively tracks the mouse cursor and looks towards it, using a 30px deadband hysteresis threshold to prevent jitter.
-- **Smart AI Chat Assistant**: Tap Mochi to open a lovely warm-rose/cream chat drawer. Chat runs token-by-token streaming from a local **Ollama** model.
-- **Intelligent Assistant Router & Tool Capabilities**:
-  Instead of sending everything to the LLM, Mochi contains an input router that parses queries to execute local tools:
-  - 🛠️ **System & Apps**: Launch local applications.
-  - 🔋 **Battery Info**: Access system battery level and charging status.
-  - 🧮 **Calculator**: Solve mathematical equations.
-  - 📋 **Clipboard Manager**: Read/Write to the system clipboard.
-  - 📅 **DateTime**: Provide local date/time information.
-  - 📁 **File Actions**: Read, search, and list local files.
-  - 🧠 **Memory Query**: Query stored personal facts.
-  - ⏰ **Reminders**: Schedule alarms and timer alerts.
-  - 🔍 **Web Search**: Query DuckDuckGo on-the-fly for real-time information.
-  - ☀️ **Weather**: Check local weather details.
-- **Hierarchical Memory Engine**:
-  - **Working Memory**: Maintains recent chat history.
-  - **Semantic Memory**: Analyzes inputs using a policy engine to learn key-value facts about you (e.g. "I love coffee") and saves them.
-  - **Episodic Memory**: Automatically tracks your achievements and milestones in a local SQLite database (`mochi_memory.db`).
-- **Collapsible Developer Diagnostics**:
-  - Press `Ctrl + Shift + D` (or `Cmd + Shift + D` on macOS) in the chat window to toggle a dark-mode developer drawer.
-  - View real-time state trees, last route telemetry (latencies, timeline steps), cache hit rate, and UI rendering performance (repaints coalesced, dropped duplicate events).
+> An open-source AI desktop companion with local LLM support, memory, behaviors, animations, and desktop automation.
 
 ---
 
-## 🛠️ Installation & Setup
+## 🎨 Hero & Demo
 
-### 1. Clone & Prerequisites
+![DeskMate Demo](docs/images/demo.gif)
+*Placeholder: Demo GIF showing DeskMate sitting on the desktop, walking, and reacting to user interaction.*
 
-Ensure you have Python 3.8+ and **Ollama** installed on your system. 
+![DeskMate Desktop UI](docs/images/screenshot.png)
+*Placeholder: Screenshot of the DeskMate character and the chat drawer interface overlay.*
 
-If you do not have Ollama installed, download it from [ollama.com](https://ollama.com) and run a model (e.g. `llama3` or `mistral`):
-```bash
-ollama run llama3
+---
+
+## 🛡️ Badges
+
+![Python Version](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple)
+![AI: Local LLM](https://img.shields.io/badge/AI-Local%20LLM-blueviolet?logo=ollama)
+![Open Source](https://img.shields.io/badge/Open%20Source-%E2%9D%A4-orange)
+
+---
+
+## 📝 Overview
+
+DeskMate is an intelligent desktop companion designed to bring context-aware, local-first utility to your screen. By integrating a background input listener and local AI routing with lightweight PyQt5 interface rendering, DeskMate stays top-of-mind and contextually aware without violating user privacy. 
+
+DeskMate brings together:
+*   **Local-First AI**: Zero dependency on external cloud APIs; runs completely on device.
+*   **Contextual Memory**: Remembers personal details, milestones, and daily accomplishments.
+*   **Proactive Companionship**: Dynamically changes behavior states (such as falling asleep or looking around) based on what you are doing.
+*   **System Integration**: Functions as a voice or keyboard command dashboard, executing local utilities like app launches, web searches, reminders, and weather queries.
+
+---
+
+## 🚀 Features
+
+| Core Component | Feature | Current Capability |
+| :--- | :--- | :--- |
+| **Local LLM Integration** | Offline Assistant | Integrates with local Ollama instances (defaulting to models like `llama3` or `mistral` on port `11434`) for private, local-first chat processing. |
+| **Memory System** | Working Memory | Retains the sliding history of the last 20 conversational exchanges to ensure consistent dialogue flow. |
+| | Semantic Memory | Dynamically parses queries via a policy engine to extract and persist key-value facts about the user. |
+| | Episodic Memory | Logs user accomplishments and notable life events in a dedicated SQLite database (`mochi_memory.db`). |
+| **Local Capabilities** | Weather Integration | Resolves queries regarding current and upcoming weather reports dynamically. |
+| | Calculator Tool | Safely parses and evaluates mathematical expressions. |
+| | Web Search | Queries DuckDuckGo on-the-fly for real-time information. |
+| | Clipboard Manager | Programmatically copies responses or reads current system clipboard data. |
+| | App Launcher | Launches system applications directly from conversational request matching. |
+| | Battery Checker | Reads platform-level battery health, percentage, and charging state. |
+| **Reminder System** | Scheduler & Alerts | Schedules specific tasks, alarms, and custom time-based push notifications. |
+| **Notification Engine** | Non-Intrusive Overlays | Displays rich, custom styled dialog notifications directly next to the pet. |
+| **Response Streaming** | Chunk-by-Chunk Delivery | Streams tokens from Ollama on-the-fly, displaying text in real-time. |
+| **Cursor Awareness** | Attention Tracker | Utilizes coordinates to direct the pet's gaze, with deadband hysteresis to keep tracking smooth. |
+| **Living Behaviors** | Behavior Engine | Triggers animated states (`idle`, `walk`, `sleep`, `typing`, `eating`, `fall`, `lie`) based on interactive inputs or long idle periods. |
+| | Focus Mode | Mutes proactive notifications automatically when the user is actively working/typing. |
+| **Diagnostics Panel** | Real-Time Telemetry | Expands into a side drawer (`Ctrl + Shift + D` / `Cmd + Shift + D`) revealing mood, latency breakdown, timeline logs, cache hits, and frame-rate stats. |
+| **Response Cache** | Local Latency Buffer | Caches repeated conversational routes and results to execute instantaneous local replies. |
+| **Plugin Architecture** | Capability System | Standardized capability base class, allowing swift additions of custom modular tools. |
+
+---
+
+## 🏗️ Architecture
+
+```
+User
+│
+▼
+Assistant Router
+│
+├── Local Capabilities
+├── Memory
+├── Scheduler
+├── Event Bus
+└── Ollama Backend
 ```
 
-### 2. Install Dependencies
+The system coordinates background threads (`QThread`) with main thread PyQt5 components. When the user sends a message or triggers an input event, the **Assistant Router** classifies the intent, evaluates whether the query can be resolved locally by any registered **Local Capability** (e.g. system tool or cache lookup), or sends the query to the local **Ollama Backend**. The **Event Bus** manages real-time signals, dispatching behavior transitions and rendering animations to the graphical viewport.
 
-Install the required Python libraries using the project's [requirements.txt](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/requirements.txt):
+---
 
+## 📂 Folder Structure
+
+```
+DeskMate/
+├── main.py                 # Application entrypoint & Cocoa setup
+├── pet.py                  # PyQt5 widget, animation handling & chat overlay UI
+├── ai_backend.py           # Background QThread worker for Ollama integration & memory extraction
+├── assets.py               # Image asset manager & animation framework loader
+├── listener.py             # Global input event hooking via pynput
+├── tools.py                # System utilities and tool helper definitions
+├── assistant/              # Core assistant logic
+│   ├── router/             # Input classifier, query normalizer/rewriter, and cache
+│   ├── session/            # Context resolver and conversation session management
+│   ├── state/              # Core state tracking and telemetry channels
+│   └── personality/        # Character behavior and text-to-speech placeholders
+├── backends/               # LLM connection layers (Local Ollama wrapper)
+├── capabilities/           # Modular tool execution units (Weather, Battery, Search, etc.)
+├── config/                 # User settings and logging configurations
+├── database/               # Local connection pools for SQLite databases
+├── events/                 # Attention tracking and behavior scheduler engines
+├── memory/                 # Episodic, semantic, working, and policy memory layers
+├── notifications/          # Alerts, reminders, and notifications dispatcher
+└── services/               # Background task scheduler and telemetry analytics service
+```
+
+---
+
+## 📷 Screenshots
+
+### Desktop Pet
+![Desktop Pet Placement](docs/images/screenshot_pet.png)
+*Placeholder: Visualizing DeskMate anchored to the screen corner.*
+
+### Chat Window
+![Chat Interface](docs/images/screenshot_chat.png)
+*Placeholder: Chat overlay with customized message bubble styling.*
+
+### Diagnostics Panel
+![Developer Diagnostics drawer](docs/images/screenshot_diagnostics.png)
+*Placeholder: Split view showing state logs, latency breakdowns, and caching logs.*
+
+### Animation Preview
+![Animations List](docs/images/screenshot_animations.png)
+*Placeholder: Preview sheets of character frames.*
+
+---
+
+## 🛠️ Installation
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/AayushAade/DeskMate.git
+cd DeskMate
+```
+
+### 2. Install Python Dependencies
+Install required packages using pip:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Run Mochi
+### 3. Set Up Ollama
+1. Download and install Ollama from [ollama.com](https://ollama.com).
+2. Start the Ollama background service.
+3. Pull your model of choice (e.g., `llama3` or `mistral`):
+   ```bash
+   ollama run llama3
+   ```
 
-Start Mochi by running the main entrypoint:
-
+### 4. Run the Application
 ```bash
 python main.py
 ```
 
-*Note: On macOS, Mochi programmatically hides its dock icon so it runs purely as a desktop accessory.*
+---
+
+## 💻 Requirements
+
+*   **Operating System**: macOS 10.15+ (Darwin-based styling/dock options built-in).
+*   **Python Version**: Python 3.8 or higher.
+*   **Main Dependencies**:
+    *   `PyQt5>=5.15.0`
+    *   `pynput>=1.7.6`
+    *   `duckduckgo-search>=6.1.7`
+*   **Local AI Service**: Ollama running locally at `localhost:11434`.
 
 ---
 
-## 📂 Project Architecture
+## 🗺️ Roadmap
 
-The project is structured modularly:
+We are working towards making DeskMate an even more interactive and comprehensive workspace companion:
 
-- [main.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/main.py): Entrypoint. Initializes the application and applies Cocoa activation policies.
-- [pet.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/pet.py): The visual PyQt5 widget containing animations, physics, global listener integration, and chat window layout.
-- [ai_backend.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/ai_backend.py): AI worker executing asynchronous threads for memory analysis and Ollama streaming.
-- [assets.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/assets.py): Image asset loader and animation metadata parser.
-- [listener.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/listener.py): Manages the global hook for mouse/keyboard inputs via `pynput`.
-- [tools.py](file:///Users/aayush/.gemini/antigravity-ide/scratch/desktop_pet/tools.py): Helper scripts and system tools.
-- `backends/`: Houses LLM backend wrappers (e.g., local Ollama wrapper).
-- `capabilities/`: Subfolders implementing specific tools (Apps, Battery, Reminders, Search, etc.).
-- `config/`: Application settings, directories, and logger configuration.
-- `database/`: Coordinates connection management for the SQLite memory database.
-- `events/`: Implements the attention tracker, behavior engine, and central event bus.
-- `memory/`: Houses policies, episodic/semantic memory savers, and relevance scorers.
-- `notifications/`: Manages system alerts and alarms.
-- `tests/`: Automated unit and integration test suite.
+- [ ] **Cross-Platform Compatibility**: Native support configurations for Windows and Linux.
+- [ ] **Expanded Sprite/Animation Sets**: More expressive behaviors, transitions, and interactable states.
+- [ ] **Voice Interaction**: Local speech-to-text (STT) and text-to-speech (TTS) pipelines.
+- [ ] **Multi-Character Library**: Switch profiles to different pets with unique personalities.
+- [ ] **Plugin Marketplace**: Community capabilities and automated tool extensions.
+- [ ] **Vision Support**: Enabling DeskMate to analyze active display viewports.
+- [ ] **Sound Effects**: Optional spatial audios linked to character behaviors.
 
 ---
 
-## ⚙️ Config & Customization
+## 🤝 Contributing
 
-You can inspect and customize Mochi's settings inside `config/settings.py`. 
+Contributions make the open-source community an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
 
-- **Animations**: Add custom PNG frames inside `assets/` and update animation configuration.
-- **Ollama settings**: Configure Ollama server ports or models if not using the default setup.
-
----
-
-## 🧪 Tests
-
-To verify stability and routing, run the test suite:
-
-```bash
-pytest tests/
-```
+1. **Fork** the Project
+2. Create your **Feature Branch** (`git checkout -b feature/AmazingFeature`)
+3. **Commit** your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. **Push** to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a **Pull Request**
 
 ---
 
-## 📜 License
+## 📄 License
 
-MIT License. Feel free to customize and expand Mochi as you see fit! 🐾
+Distributed under the MIT License. See `LICENSE` for more information.
+
+---
+
+## 💖 Acknowledgements
+
+*   Inspiration from classic 90s desktop companions and virtual pets.
+*   The open-source community for local-first AI wrappers and tool environments.
+
+---
+
+DeskMate is an evolving open-source project focused on building expressive AI desktop companions that feel alive while respecting user privacy through local-first intelligence.
